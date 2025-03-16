@@ -12,6 +12,7 @@ uuid = { version = "*", features = ["v4"] }
 serde_json = "*"
 walkdir = "*"
 postgres-types = "0.2.9"
+rust-embed = "8.6.0"
 # compact_str = { version = "*", features = ["serde", "smallvec"] }
 
 # [profile.release]

@@ -93,10 +93,14 @@ impl PgConnection {
         PgConnection { client }
     }
 
-    fn query(self: &Self, stmt: &str) -> Result<Vec<serde_json::Value>, may_postgres::Error> {
+    fn query(self: &Self, stmt: &str, params: Option<&[&(dyn ToSql)]>) -> Result<Vec<serde_json::Value>, may_postgres::Error> {
         let prepare = self.client.prepare(stmt)?;
         //let _ = self.client.execute("prepare tes_stmt as select * from tes;", &[]).unwrap();
-        let query = self.client.query_raw(&prepare, &[])?;
+
+        let query = match params {
+            Some(p) => self.client.query_raw(&prepare, p)?,
+            None => self.client.query_raw(&prepare, &[])?,
+        };
 
         let hasil: Vec<serde_json::Value> = query.map(|r| {
                         let r = r.unwrap();

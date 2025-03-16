@@ -13,6 +13,7 @@ use ::std::{
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
     os::unix::fs as unix_fs,
+    collections::{HashMap, HashSet}
 };
 use clap::{Arg, Command};
 use include_dir::{include_dir, Dir};
@@ -32,6 +33,10 @@ const DPRINT_CONFIG: &str = include_str!("../dprint.json");
 const CB: &[u8] = include_bytes!("../libs/cb");
 const PN: &[u8] = include_bytes!("../libs/pn");
 const DP: &[u8] = include_bytes!("../libs/dp");
+
+#[derive(rust_embed::RustEmbed)]
+#[folder = "android/"]
+struct Android;
 
 lazy_static! {
     static ref UBI_PATH: PathBuf =
@@ -66,7 +71,7 @@ fn cek_file(path_str: &str) -> bool {
     let nama_sesuai = path.file_stem().and_then(|stem| stem.to_str()) == Some("server");
     let ekstensi_sesuai = matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("py") | Some("js") | Some("ts")
+        Some("py") | Some("js") | Some("ts") | Some("ubi")
     );
 
     nama_sesuai && ekstensi_sesuai
@@ -397,6 +402,13 @@ fn process_conversion(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut intermediate_output = std::fs::read_to_string(input_file)?;
 
+    if input_file.contains("server.ts") {
+        let model = std::fs::read_to_string(input_file.replace("server.ts", "model.ts").replace("server.py", "model.ts").replace("server.ubi", "model.ts"))?;
+        intermediate_output += &model;
+        intermediate_output = transform_spawn_shared(&intermediate_output);
+        intermediate_output = transform_type(&intermediate_output);
+    }
+
     for (input, output) in input_templates.iter().zip(output_templates.iter()) {
         let mut output_result = StdCommand::new(ubi_path().join("cb"))
             .args([input, output, "-stdin", "-stdout", "-matcher", matcher])
@@ -424,6 +436,11 @@ fn process_conversion(
     }
 
     let mut file = File::create(output_file)?;
+
+    if input_file.contains("server.ts") {
+        intermediate_output = fix_query_params(&intermediate_output);
+    }
+
     file.write_all(intermediate_output.as_bytes())?;
 
     Ok(())
@@ -499,7 +516,9 @@ fn convert_ts_to_rust(
         "\":[1]\"",
         // db query
         "let :[1]: :[2] = ubi.query(:[3].to_string())",
-        "ubi.query(:[1].to_string())",
+        "ubi.query(:[1].to_string(), null)",
+        "ubi.query(:[1].to_string(), :[2])",
+        "let :[1]: :[2] = db.query(:[3])",
         // array literal
         "= [:[1]]",
         // array literal in argument
@@ -511,6 +530,12 @@ fn convert_ts_to_rust(
         "\"{:?}\".to_string()",
         ": :[1] = {:[2]}",
         "ubi.req.data",
+        // coroutine
+        "spawn_isolated(() => {:[1]})",
+        "spawn_shared(:[1])",
+        "shared(:[1])",
+        "lock(:[1])",
+        "null",
     ];
 
     let output_templates2 = vec![
@@ -539,7 +564,9 @@ fn convert_ts_to_rust(
         "\":[1]\".to_string()",
         // db query
         "let :[1] = db.query(:[3])?",
-        "db.query(:[1])?",
+        "db.query(:[1], None)?",
+        "db.query(:[1], Some(&:[2]))?",
+        "let :[1] = db.query(:[3])",
         // array literal
         "= vec![:[1]]",
         // array literal in argument
@@ -551,6 +578,12 @@ fn convert_ts_to_rust(
         "\"{:?}\"",
         " = :[1] {:[2]}",
         "serde_json::from_slice(req.body().fill_buf().unwrap()).unwrap()",
+        // coroutine
+        "go!(move || { :[1] })",
+        "go!(move || { :[1] })",
+        "std::sync::Arc::new(may::sync::Mutex::new(:[1]))",
+        ":[1].lock().unwrap()",
+        "None"
     ];
 
     input_templates.extend(input_templates2.into_iter().map(String::from));
@@ -563,6 +596,98 @@ fn convert_ts_to_rust(
         out_filename,
         ".ts",
     )
+}
+
+fn fix_query_params(input: &str) -> String {
+    let re = Regex::new(r#"Some\(&\[(.*?)\]\)"#).unwrap();
+
+    re.replace_all(input, |caps: &regex::Captures| {
+        let params = &caps[1];
+        let fixed_params = params.split(", ")
+                .map(|param| format!("&{}", param))
+                .collect::<Vec<String>>()
+                .join(", ");
+        format!("Some(&[{}])", fixed_params)
+    }).to_string()
+}
+
+fn transform_spawn_shared(code: &str) -> String {
+    let re = Regex::new(r"spawn_shared\s*\(\s*\(\s*([^)]*?)\s*\)\s*=>\s*\{([\s\S]*?)\}\s*\)").unwrap();
+
+    let transformed_code = re.replace_all(code, |caps: &regex::Captures| {
+        let args = caps[1]
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+
+        let mut body = caps[2]
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut used_vars = std::collections::HashSet::new();
+        for arg in &args {
+            if body.contains(arg) {
+                used_vars.insert(*arg);
+            }
+        }
+
+        let clones: Vec<String> = used_vars
+            .iter()
+            .map(|var| format!("let {var}_clone = std::sync::Arc::clone(&{var});"))
+            .collect();
+
+        for var in &used_vars {
+            let regex = Regex::new(&format!(r"\b{}\b", regex::escape(var))).unwrap();
+            body = regex.replace_all(&body, format!("{}_clone", var)).to_string();
+        }
+
+        format!("{}\nspawn_shared({})", clones.join("\n"), body)
+    }).to_string();
+
+    transformed_code
+}
+
+fn transform_type(code: &str) -> String {
+    let type_re = Regex::new(r"type\s+(\w+)\s*=\s*\{([^}]*)\};").unwrap();
+    let alias_re = Regex::new(r"type\s+(\w+)\s*=\s*([\w\s&]+);").unwrap();
+
+    let mut type_map = HashMap::new();
+
+    for cap in type_re.captures_iter(code) {
+        let type_name = cap[1].trim().to_string();
+        let properties = cap[2]
+            .split(';')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<HashSet<_>>();
+        type_map.insert(type_name, properties);
+    }
+
+    let transformed_code = alias_re.replace_all(code, |caps: &regex::Captures| {
+        let new_type_name = &caps[1];
+        let type_names = caps[2]
+            .split('&')
+            .map(|s| s.trim().to_string())
+            .collect::<Vec<_>>();
+
+        let mut combined_properties = HashSet::new();
+
+        for type_name in type_names {
+            if let Some(props) = type_map.get(&type_name) {
+                combined_properties.extend(props.clone());
+            }
+        }
+
+        let properties_str = combined_properties.into_iter().map(|p| format!("{};", p)).collect::<Vec<_>>().join("\n    ");
+
+        format!("type {} = {{\n    {}\n}};", new_type_name, properties_str)
+    });
+
+    transformed_code.to_string()
 }
 
 fn convert_py_to_rust(
@@ -660,6 +785,113 @@ fn convert_py_to_rust(
     )
 }
 
+fn convert_ubi_to_rust(
+    input_file: &str,
+    out_filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+
+    let mut input_templates: Vec<String> = vec![];
+    let mut output_templates: Vec<String> = vec![];
+
+if out_filename.contains("_:") {
+        input_templates.extend(vec![
+        // get function
+        "f get(): text {:[1] >> :[2] }",
+        "f post(): text {:[1] >> :[2] }",
+        "f update(): text {:[1] >> :[2] }",
+        "f delete(): text {:[1] >> :[2] }",
+        ].into_iter().map(String::from));
+
+        output_templates.extend(vec![
+                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+        ].into_iter().map(String::from));
+    } else {
+        input_templates.extend(vec![
+        // get function
+        "f get(): text {:[1] >> :[2] }",
+        "f post(): text {:[1] >> :[2] }",
+        "f update(): text {:[1] >> :[2] }",
+        "f delete(): text {:[1] >> :[2] }",
+        ].into_iter().map(String::from));
+
+        output_templates.extend(vec![
+                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+        ].into_iter().map(String::from));
+    }
+
+    let input_templates2: Vec<String> = vec![
+        ":[1] :[2] = ubi.query(:[3])",
+        "ubi.query(:[1])",
+        "f :[1] (:[2]): :[3] {:[4]}",
+        "f :[1] (:[2]) {:[3]}",
+        ":[1] := \":[2]\"",
+        ":[1]: := :[2]",
+        "= \":[1]\"",
+        ":[1] = :[2]",
+        ": text",
+        "text :[1]",
+        "text :[1]",
+        "int :[1]",
+        "float :[1]",
+        "[:[1]] :[2]",
+        "bol :[1]",
+        "type :[1] { :[2] }",
+        "show(:[1])",
+        "for :[1] = :[2]..:[3] { :[4] }",
+        "for :[1] in :[2] { :[3] }",
+        " break ",
+        ">> :[1]",
+        ">>",
+        ": [:[1]]"
+    ].into_iter().map(String::from).collect();
+
+    let output_templates2: Vec<String> = vec![
+        "let :[2]: :[1] = ubi.query(:[3].to_string())",
+        "ubi.query(:[1].to_string())",
+        "fn :[1] (:[2]) -> :[3] {:[4]}",
+        "fn :[1] (:[2]) {:[3]}",
+        "let :[1] = String::from(\":[2]\")",
+        "let :[1] = :[2];",
+         "= String::from(:[1]);",
+        ":[1] = :[2];",
+        ": String",
+        ":[1]: String",
+        ":[1]: String",
+        ":[1]: int32",
+        ":[1]: float32",
+        ":[2]: Vec<:[1]>",
+        ":[1] bool",
+        "struct :[1] { :[2] }",
+        "println!(:[1]);",
+        "for :[1] in :[2]..:[3] { :[4] }",
+        "for :[1] in :[2].iter() { :[3] }",
+        " break; ",
+        "return :[1];",
+        "return",
+        ": Vec<:[1]>"
+    ].into_iter().map(String::from).collect();
+
+    input_templates.extend(input_templates2.into_iter().map(String::from));
+    output_templates.extend(output_templates2.into_iter().map(String::from));
+
+    println!("input file: {}", input_file);
+    println!("output file: {}", out_filename);
+
+    process_conversion(
+        &input_templates,
+        &output_templates,
+        input_file,
+        out_filename,
+        ".generic",
+    )
+}
+
 fn convert_ts_to_sql(
     input_file: &str,
     out_filename: &str,
@@ -670,35 +902,248 @@ fn convert_ts_to_sql(
         .expect("Compiling failed");
 
     let input_templates: Vec<String> = vec![
+        "type :[1] = :[2] & :[3];",
+        "number",
+        "string",
         "type :[1] = { :[2] }",
-        ":[1]: :[2]; // :[3]",
+        ":[1]: :[2]; //:[3]",
         "primary_key",
         // "// foreign_key(:[1]->:[2].:[3])",
         "not_null",
         "unique",
-        "int"
+        ":[1]: :[2];",
+        ",;",
+        ";,",
+        "bigint bigserial primary key",
+        "foreign_key(:[1].:[2])",
+        "//",
     ].into_iter().map(String::from).collect();
 
     let output_templates: Vec<String> = vec![
-        "create table if not exist :[1] (
-            :[2]
-        )",
-        ":[1] :[3],",
-        "serial primary key",
+        "",
+        "bigint",
+        "text",
+        "create table if not exists \":[1]\" (
+            :[2]",
+        ":[1] :[2] :[3],",
+        "bigserial primary key",
         // ",foreign key (:[1]) references :[2](:[3]),",
         "not null",
         "unique",
+        ":[1] :[2],",
+        ");",
+        ");",
+        "bigserial primary key",
+        "references :[1](:[2])",
+        ""
     ].into_iter().map(String::from).collect();
+
+    println!("input file: {}", input_file);
+    println!("output file: {}", out_filename);
 
     process_conversion(
         &input_templates,
         &output_templates,
         input_file,
         out_filename,
-        ".ts",
+        ".generic",
     )
 }
 
+fn convert_html_to_kotlin(
+    input_file: &str,
+    output_file: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    StdCommand::new(ubi_path().join("dp"))
+        .arg("fmt")
+        .output()
+        .expect("Compiling failed");
+
+    let name = "Ubi".to_owned() + &input_file.replace("./routes", "").replace("/ui.ubi", "").replace("/", "_");
+
+    let input_templates: Vec<String> = vec![
+        "{:[1]}",
+        "<div>",
+        "</div>",
+        "<row :[1]>",
+        "class=\":[1]\"",
+        "<button :[1]>:[2]</button>",
+        "<p>:[1]</p>",
+        "onclick=\":[1]()\"",
+        "<a href=\":[1]\">:[2]</a>",
+        "justify-center",
+        "items-center"
+    ].into_iter().map(String::from).collect();
+
+    let output_templates: Vec<String> = vec![
+        "Text(\"$:[1]\")",
+        "Box() {",
+        "}",
+        "Row(:[1]) {",
+        ":[1]",
+        "Button(:[1]) {:[2]}",
+        "Text(\":[1]\")",
+        "onClick = { :[1]() }",
+        "   Button(onClick = {
+
+            navController.navigate(\":[1]\") {
+                     popUpTo(navController.graph.startDestinationId) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+
+
+            }) {:[2]}",
+        "horizontalArrangement = Arrangement.Center,",
+        "verticalAlignment = Alignment.CenterVertically,"
+    ].into_iter().map(String::from).collect();
+
+
+    let input_templates2: Vec<String> = vec![
+        "let :[1] = new Signal(:[2])",
+        "function :[1](:[2]){:[3]}",
+        "${:[1]}",
+        ":[1].set(:[2])",
+        ":[1].get()"
+    ].into_iter().map(String::from).collect();
+
+    let output_templates2: Vec<String> = vec![
+        "var :[1] by remember { mutableStateOf(:[2]) }",
+        "fun :[1] (:[2]) {:[3]}",
+        "$:[1]",
+        ":[1] = :[2]",
+        ":[1]"
+    ].into_iter().map(String::from).collect();
+
+    let intermediate_output = std::fs::read_to_string(input_file)?;
+
+    let (mut html, mut js) = split_html_js(&intermediate_output);
+
+    html = handle_display_flex(html.as_str());
+
+        for (input, output) in input_templates.iter().zip(output_templates.iter()) {
+            let mut output_result = StdCommand::new(ubi_path().join("cb"))
+                    .args([input, output, "-stdin", "-stdout", "-matcher", ".html"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()?;
+
+            if let Some(mut stdin) = output_result.stdin.take() {
+                stdin.write_all(html.as_bytes())?;
+            }
+
+            let output = output_result.wait_with_output()?;
+
+            if !output.status.success() {
+                eprintln!("Gagal menjalankan formatter");
+                return Err("Formatter failed".into());
+            }
+
+            html = String::from_utf8(output.stdout)?;
+        }
+
+        for (input, output) in input_templates2.iter().zip(output_templates2.iter()) {
+                let mut output_result = StdCommand::new(ubi_path().join("cb"))
+                            .args([input, output, "-stdin", "-stdout", "-matcher", ".js"])
+                            .stdin(Stdio::piped())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::null())
+                            .spawn()?;
+
+                if let Some(mut stdin) = output_result.stdin.take() {
+                    stdin.write_all(js.as_bytes())?;
+                }
+
+                let output = output_result.wait_with_output()?;
+
+                if !output.status.success() {
+                    eprintln!("Gagal menjalankan formatter");
+                    return Err("Formatter failed".into());
+                }
+
+                js = String::from_utf8(output.stdout)?;
+        }
+
+        let opening = format!("package com.fuji.ubi
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
+
+@Composable
+fun {}(navController: NavController) {{", name);
+
+        html = handle_android_import(&html);
+
+        html = opening + &js + &html + "}";
+
+        let mut file = File::create(output_file.to_owned() + &name + ".kt")?;
+        file.write_all(html.as_bytes())?;
+
+
+    Ok(name)
+
+}
+
+fn handle_android_import(input: &str) -> String {
+    let re = Regex::new(r#"(?i)<ubi\+\s*"([^"]+)">\s*"#).unwrap();
+
+    let output = re.replace_all(input, |caps: &regex::Captures| {
+        let path = &caps[1];
+
+        // Normalisasi path
+        let func_name = path
+            .trim()
+            .replace("./", "")
+            .replace("/ui.ubi", "")
+            .replace("/", "_")
+            .replace("-", "_");
+
+        format!("Ubi_{}(navController);", func_name)
+    });
+
+    output.to_string()
+}
+
+fn handle_display_flex(input: &str) -> String {
+    let re = Regex::new(r#"(?i)<(\w+)([^>]*)class="([^"]*)""#).unwrap();
+
+    let output = re.replace_all(input, |caps: &regex::Captures| {
+        let tag = &caps[1];
+        let other_attrs = &caps[2];
+        let class_attr = &caps[3];
+
+        // Hapus class "flex" (tidak case-sensitive)
+        let filtered_classes: Vec<&str> = class_attr
+            .split_whitespace()
+            .filter(|c| !c.eq_ignore_ascii_case("flex"))
+            .collect();
+
+        let new_class_attr = filtered_classes.join(" ");
+        let contains_flex = class_attr
+            .split_whitespace()
+            .any(|c| c.eq_ignore_ascii_case("flex"));
+
+        let new_tag = if contains_flex { "row" } else { tag };
+
+        if new_class_attr.is_empty() {
+            format!("<{new_tag}{other_attrs}")
+        } else {
+            format!("<{new_tag}{other_attrs} class=\"{new_class_attr}\"")
+        }
+    });
+
+    output.to_string()
+}
 
 fn convert_general(
     input: &str,
@@ -903,6 +1348,9 @@ fn process_file(input_file: &str, out_filename: &str) -> Result<(), Box<dyn std:
             }
             Some("py") => {
                 convert_py_to_rust(input_file, out_filename)?;
+            }
+            Some("ubi") => {
+                convert_ubi_to_rust(input_file, out_filename)?;
             }
             _ => eprintln!("Format file {} tidak didukung!", input_file),
         }
@@ -1135,6 +1583,37 @@ fn get_json_name(config_path: &str) -> Option<String> {
     json.get("name")?.as_str().map(|s| s.to_string())
 }
 
+fn handle_android(path: &str, nav: &mut String, nav2: &mut String) {
+    for entry in fs::read_dir(path).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+
+        if path.is_dir() {
+            handle_android(path.to_str().unwrap(), nav, nav2);
+        } else if path.file_name().unwrap() == "ui.ubi" {
+            let name = convert_html_to_kotlin(path.to_str().unwrap(), ".project_build/android/app/src/main/java/com/fuji/ubi/").unwrap();
+            let name2 =  name.replace("Ubi_", "/")
+                        .replace("Ubi", "/")
+                        .replace("_", "/");
+            nav.push_str(&format!("    {}(
+                            route = \"{}\",
+                                            icon = Icons.Filled.Settings,
+                                            label = \"{}\"
+                                            ),
+            ",
+                name, name2, name
+            ));
+
+            nav2.push_str(&format!(" composable(NavigationItem.{}.route) {{
+                {}(navController)
+                                }}
+            ",
+                name, name
+            ));
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let matches = Command::new("ubi")
         .version("1.0")
@@ -1150,7 +1629,8 @@ fn main() -> io::Result<()> {
         )
         .subcommand(Command::new("setup").about("Configure Ubi environment"))
         .subcommand(Command::new("build").about("Build Ubi project"))
-        .subcommand(Command::new("init_postgres").about("Migrate PostgreSQL database"))
+        .subcommand(Command::new("migrate").about("Migrate PostgreSQL database"))
+        .subcommand(Command::new("build-android").about("Build for Android"))
         .get_matches();
 
     let mut project_name = String::new();
@@ -1186,7 +1666,7 @@ fn main() -> io::Result<()> {
                 );
             }
         },
-        Some("init_postgres") => {
+        Some("migrate") => {
             let db_dir = Path::new(".project_build/db/postgres");
             fs::create_dir_all(&db_dir)?;
             models_to_sql(Path::new("./routes"));
@@ -1262,7 +1742,66 @@ fn main() -> io::Result<()> {
                 .output()
                 .expect("Compiling failed");
             println!("Yeayy, The project has been built in the build folder");
+        },
+        Some("build-android") => {
+
+
+let output_dir = PathBuf::from(".project_build/android");
+
+    for file in Android::iter() {
+        let path = PathBuf::from(file.as_ref());
+        let target_path = output_dir.join(&path);
+
+        // Jika ada subfolder, buat dulu
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent)?;
         }
+
+        // Simpan file dari embedded data
+        if let Some(content) = Android::get(file.as_ref()) {
+            fs::write(&target_path, content.data)?;
+         }
+    }
+
+    let mut nav = r###" enum class NavigationItem(
+    val route: String,
+    val icon: ImageVector,
+    val label: String
+) {
+
+    "###.to_string();
+
+    let mut nav2 = r###"
+
+@Composable
+                fun AppNavHost(
+                    navController: NavHostController,
+                    modifier: Modifier = Modifier
+            ) {
+                    NavHost(
+                        navController = navController,
+                        startDestination = NavigationItem.Ubi.route,
+                        modifier = modifier
+                        ) {
+
+
+                "###.to_string();
+    handle_android("./routes", &mut nav, &mut nav2);
+    nav = nav + "}" + &nav2 + "}}";
+
+    let file_path = "./.project_build/android/app/src/main/java/com/fuji/ubi/Navigation.kt";
+    let mut main_activity = fs::read_to_string(file_path).unwrap();
+    main_activity.push_str(&nav);
+    fs::write(file_path, main_activity).unwrap();
+
+
+/*
+            StdCommand::new("./gradlew")
+                .arg("assembleDebug")
+                .output()
+                .expect("Compiling Android failed");
+*/
+        },
         _ => println!("invalid command!"),
     };
 

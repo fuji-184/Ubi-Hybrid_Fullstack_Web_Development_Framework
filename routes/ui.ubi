@@ -1,7 +1,10 @@
 <script>
-let a = "fuji"
+    let tes = new Signal(100)
+
+    function klik(){
+        tes.set(tes.get() + 1)
+    }
 </script>
 
-<if a === "fuji">
-Helloooo
-</if>
+<button onclick="klik()"><p>klik</p></button>
+{tes}
