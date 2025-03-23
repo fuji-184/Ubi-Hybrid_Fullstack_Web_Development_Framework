@@ -1,5 +1,7 @@
 {
     "name": "my_app",
+    "description": "this is my app",
+    "version": "0.1",
     "port": 8080,
     "postgres": {
         "host": "localhost",

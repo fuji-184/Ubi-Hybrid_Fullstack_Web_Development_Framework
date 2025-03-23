@@ -205,6 +205,76 @@
             }
         }
 
+
+
+
+
+
+
+
+
+
+
+function cacheCurrentHtml(url) {
+    // Ambil HTML yang saat ini tampil di halaman
+    const currentHtml = document.documentElement.outerHTML;
+
+    // Simpan HTML yang tampil di localStorage
+    localStorage.setItem(`htmlCache:${url}`, currentHtml);
+
+    // Simpan ETag dan Last-Modified yang ada dari response sebelumnya
+    const etag = localStorage.getItem(`etag:${url}`);
+    const lastModified = localStorage.getItem(`lastModified:${url}`);
+
+    const headers = {};
+
+    if (etag) {
+        headers['If-None-Match'] = etag;
+    }
+    if (lastModified) {
+        headers['If-Modified-Since'] = lastModified;
+    }
+
+    // Lakukan fetch untuk memeriksa apakah ada perubahan pada server
+    fetch(url, { headers })
+        .then(response => {
+            if (response.status === 304) {
+                // Tidak ada perubahan, gunakan cache yang sudah ada
+                console.log('No changes, using cached HTML.');
+                document.documentElement.innerHTML = localStorage.getItem(`htmlCache:${url}`);
+                return;
+            }
+
+            // Jika ada perubahan, simpan ETag dan Last-Modified terbaru
+            const newEtag = response.headers.get('ETag');
+            const newLastModified = response.headers.get('Last-Modified');
+
+            if (newEtag) {
+                localStorage.setItem(`etag:${url}`, newEtag);
+            }
+            if (newLastModified) {
+                localStorage.setItem(`lastModified:${url}`, newLastModified);
+            }
+
+            // Ambil HTML terbaru dari server
+            return response.text();
+        })
+        .then(html => {
+            if (html) {
+                // Jika ada HTML baru, simpan dan tampilkan
+                localStorage.setItem(`htmlCache:${url}`, html);
+                document.documentElement.innerHTML = html;
+            }
+        })
+        .catch(error => {
+            console.error('Error fetching the page:', error);
+        });
+}
+
+// Memanggil fungsi untuk menyimpan HTML yang sedang tampil dan memeriksa pembaruan
+cacheCurrentHtml(window.location.href);
+
+
     </script>
 
     <div id="app">

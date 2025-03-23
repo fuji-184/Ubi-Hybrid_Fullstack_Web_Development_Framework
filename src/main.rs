@@ -5,6 +5,9 @@
     improper_ctypes
 )]
 
+mod tools;
+use tools::*;
+
 use ::std::{
     env, fs,
     fs::File,
@@ -22,6 +25,7 @@ use regex::Regex;
 use serde_json::Value;
 use uuid::Uuid;
 use walkdir::WalkDir;
+use serde::{Serialize, Deserialize};
 // use compact_str::{format_compact, CompactString, ToCompactString};
 
 const CARGO_TOML: &str = include_str!("../project/Cargo.toml");
@@ -29,14 +33,37 @@ const MAIN_RS: &str = include_str!("../project/src/main.rs");
 const CONFIG: &str = include_str!("../project/config.json");
 const ROUTES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/routes");
 const INDEX_HTML: &str = include_str!("../libs/index.html");
+const DOC_HTML: &str = include_str!("../libs/doc.html");
 const DPRINT_CONFIG: &str = include_str!("../dprint.json");
 const CB: &[u8] = include_bytes!("../libs/cb");
 const PN: &[u8] = include_bytes!("../libs/pn");
 const DP: &[u8] = include_bytes!("../libs/dp");
 
+#[derive(Debug, Serialize, Deserialize)]
+struct PostgresConfig {
+    host: String,
+    port: u16,
+    name: String,
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AppConfig {
+    name: String,
+    description: String,
+    version: String,
+    port: u16,
+    postgres: PostgresConfig,
+}
+
 #[derive(rust_embed::RustEmbed)]
 #[folder = "android/"]
 struct Android;
+
+lazy_static! {
+    static ref DOC_CONFIGURED: std::sync::RwLock<bool> = std::sync::RwLock::new(false);
+}
 
 lazy_static! {
     static ref UBI_PATH: PathBuf =
@@ -68,7 +95,12 @@ fn build_ubi() -> io::Result<()> {
 
 fn cek_file(path_str: &str) -> bool {
     let path = Path::new(path_str);
-    let nama_sesuai = path.file_stem().and_then(|stem| stem.to_str()) == Some("server");
+
+    let nama_sesuai = path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|name| name == "server" || name == "ws")
+        .unwrap_or(false);
+
     let ekstensi_sesuai = matches!(
         path.extension().and_then(|ext| ext.to_str()),
         Some("py") | Some("js") | Some("ts") | Some("ubi")
@@ -123,7 +155,20 @@ fn handle_files(dir: &Path) -> io::Result<()> {
                 .unwrap()
                 .strip_prefix("./.project_build/src")
                 .unwrap();
-            let tes = format!(
+
+            let mut tes = String::new();
+
+            if path.to_str().unwrap().contains("/ws.") {
+                tes =  format!(
+                "./.project_build/src/server/{}.rs",
+                dest_relative
+                    .to_str()
+                    .unwrap()
+                    .replace("/", "_")
+                    .replace("server", "ws")
+            );
+            } else {
+                tes =  format!(
                 "./.project_build/src/server/{}.rs",
                 dest_relative
                     .to_str()
@@ -131,6 +176,7 @@ fn handle_files(dir: &Path) -> io::Result<()> {
                     .replace("/", "_")
                     .replace("server", "api")
             );
+            }
 
             process_file(path.to_str().unwrap(), &tes).expect("Compilation failed");
         }
@@ -398,11 +444,13 @@ fn process_conversion(
     output_templates: &Vec<String>,
     input_file: &str,
     output_file: &str,
-    matcher: &str,
+    matcher: &str
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut intermediate_output = std::fs::read_to_string(input_file)?;
 
-    if input_file.contains("server.ts") {
+        if !input_file.contains("model.ts") && !input_file.contains("ws.ts") && input_file.contains("server.ts")
+    && Path::new(&input_file.replace("server.ts", "model.ts").replace("server.py", "model.ts")
+            .replace("server.ubi", "model.rs")).exists() {
         let model = std::fs::read_to_string(input_file.replace("server.ts", "model.ts").replace("server.py", "model.ts").replace("server.ubi", "model.ts"))?;
         intermediate_output += &model;
         intermediate_output = transform_spawn_shared(&intermediate_output);
@@ -431,7 +479,7 @@ fn process_conversion(
         intermediate_output = String::from_utf8(output.stdout)?;
     }
 
-    if !output_file.contains("model.sql") {
+    if !output_file.contains("model.sql") && !output_file.contains("ws.rs") {
         intermediate_output = format!("use std::io::BufRead;{}", intermediate_output);
     }
 
@@ -439,6 +487,7 @@ fn process_conversion(
 
     if input_file.contains("server.ts") {
         intermediate_output = fix_query_params(&intermediate_output);
+        intermediate_output = transform_handler(&intermediate_output, output_file).unwrap();
     }
 
     file.write_all(intermediate_output.as_bytes())?;
@@ -468,10 +517,10 @@ fn convert_ts_to_rust(
         ].into_iter().map(String::from));
 
         output_templates.extend(vec![
-                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                   "pub fn get(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn post(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn update(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn delete(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
         ].into_iter().map(String::from));
     } else {
         input_templates.extend(vec![
@@ -483,15 +532,19 @@ fn convert_ts_to_rust(
         ].into_iter().map(String::from));
 
         output_templates.extend(vec![
-                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                   "pub fn get(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn post(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn update(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn delete(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
         ].into_iter().map(String::from));
     }
 
     let input_templates2 = vec![
-
+ "function onmessage(:[2]) {:[1]}",
+"function onconnect(:[2]) {:[1]}",
+"function onclose(:[2]) {:[1]}",
+"ws.send(:[1])",
+"ws.msg()",
         // struct json
         r#"// json
         type :[1] = { :[2] };"#,
@@ -536,12 +589,35 @@ fn convert_ts_to_rust(
         "shared(:[1])",
         "lock(:[1])",
         "null",
+        ": string"
     ];
 
     let output_templates2 = vec![
+ "pub fn onmessage(path: &str, stream: &mut may::net::TcpStream, ctx: &mut may_minihttp::WsContext, msg: Option<&str>) -> std::io::Result<()> {
+    let msg = msg.unwrap();
+
+            :[1]
+
+    Ok(())
+}",
+ "pub fn onconnect(path: &str, stream: &mut may::net::TcpStream, ctx: &mut may_minihttp::WsContext) -> std::io::Result<()> {
+            :[1]
+
+    Ok(())
+}",
+ "pub fn onclose(path: &str, stream: &mut may::net::TcpStream, ctx: &mut may_minihttp::WsContext, code: u16, reason: &str) -> std::io::Result<()> {
+
+            :[1]
+
+    Ok(())
+}",
+        "ctx.send_text(stream, :[1])",
+
+"msg",
+
         // struct
-        r#"#[derive(Debug, serde::Deserialize, serde::Serialize)]
-        struct :[1] { :[2] }"#,
+        r#"#[derive(Debug, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+        pub struct :[1] { :[2] }"#,
         // struct
         "struct :[1] { :[2] }",
         // string struct
@@ -583,7 +659,8 @@ fn convert_ts_to_rust(
         "go!(move || { :[1] })",
         "std::sync::Arc::new(may::sync::Mutex::new(:[1]))",
         ":[1].lock().unwrap()",
-        "None"
+        "None",
+        ": String"
     ];
 
     input_templates.extend(input_templates2.into_iter().map(String::from));
@@ -594,7 +671,7 @@ fn convert_ts_to_rust(
         &output_templates,
         input_file,
         out_filename,
-        ".ts",
+        ".ts"
     )
 }
 
@@ -782,7 +859,7 @@ fn convert_py_to_rust(
         rust_file_path,
         out_filename,
         ".rs",
-    )
+        )
 }
 
 fn convert_ubi_to_rust(
@@ -880,16 +957,13 @@ if out_filename.contains("_:") {
     input_templates.extend(input_templates2.into_iter().map(String::from));
     output_templates.extend(output_templates2.into_iter().map(String::from));
 
-    println!("input file: {}", input_file);
-    println!("output file: {}", out_filename);
-
     process_conversion(
         &input_templates,
         &output_templates,
         input_file,
         out_filename,
         ".generic",
-    )
+        )
 }
 
 fn convert_ts_to_sql(
@@ -902,6 +976,7 @@ fn convert_ts_to_sql(
         .expect("Compiling failed");
 
     let input_templates: Vec<String> = vec![
+        "// delete_table_:[1]",
         "type :[1] = :[2] & :[3];",
         "number",
         "string",
@@ -916,10 +991,13 @@ fn convert_ts_to_sql(
         ";,",
         "bigint bigserial primary key",
         "foreign_key(:[1].:[2])",
+        "// delete_all_table",
         "//",
     ].into_iter().map(String::from).collect();
 
     let output_templates: Vec<String> = vec![
+        "DROP TABLE IF EXISTS :[1] CASCADE;",
+
         "",
         "bigint",
         "text",
@@ -935,11 +1013,22 @@ fn convert_ts_to_sql(
         ");",
         "bigserial primary key",
         "references :[1](:[2])",
+       "
+DO $$
+DECLARE
+    drop_query TEXT;
+BEGIN
+    SELECT 'DROP TABLE IF EXISTS ' || string_agg(tablename::text, ', ') || ' CASCADE;'
+    INTO drop_query
+    FROM pg_tables
+    WHERE schemaname = 'public';
+
+    -- Eksekusi query drop
+    EXECUTE drop_query;
+END $$;
+",
         ""
     ].into_iter().map(String::from).collect();
-
-    println!("input file: {}", input_file);
-    println!("output file: {}", out_filename);
 
     process_conversion(
         &input_templates,
@@ -947,7 +1036,7 @@ fn convert_ts_to_sql(
         input_file,
         out_filename,
         ".generic",
-    )
+        )
 }
 
 fn convert_html_to_kotlin(
@@ -1423,6 +1512,9 @@ fn generate_mod_rs(server_dir: &str) {
 
     let mut routes = Vec::new();
     let mut parameterized_routes = Vec::new();
+    let mut ws_onconnect_routes = Vec::new();
+    let mut ws_onmessage_routes = Vec::new();
+    let mut ws_onclose_routes = Vec::new();
     let mut modules = Vec::new();
 
     for entry in fs::read_dir(&server_dir).unwrap() {
@@ -1479,7 +1571,31 @@ fn generate_mod_rs(server_dir: &str) {
                                                 routes.push(format!(
                             "(\"/{file_name}/delete\", {file_name}::delete as HandlerFn)"
                             ));
-                                            }
+                        }
+
+
+                        if file.contains("pub fn onconnect") {
+
+                                ws_onconnect_routes.push(format!("(\"/{}/onconnect\", {file_name}::onconnect as WsOnConnectHandler)",  file_name.replace("_", "/")));
+                        }
+
+                        if file.contains("pub fn onmessage") {
+
+                                ws_onmessage_routes.push(format!("(\"/{}/onmessage\", {file_name}::onmessage as WsOnMessageHandler)", file_name.replace("_", "/")));
+                        }
+
+                        if file.contains("pub fn onclose") {
+
+                                ws_onclose_routes.push(format!("(\"/{}/onclose\", {file_name}::onclose as WsOnCloseHandler)", file_name.replace("_", "/")));
+                        }
+
+
+
+
+
+
+
+
                     }
                 }
             }
@@ -1491,11 +1607,18 @@ fn generate_mod_rs(server_dir: &str) {
 use std::collections::HashMap;
 use lazy_static::lazy_static;
 use crate::PgConnection;
+use may_minihttp::WsContext;
+use may::net::TcpStream;
+use std::io;
 
 {}
 
-pub type HandlerFn = fn(&PgConnection, may_minihttp::Request) -> Result<String, may_postgres::Error>;
-pub type HandlerFn2 = fn(&PgConnection, may_minihttp::Request, &HashMap<String, String>) -> Result<String, may_postgres::Error>;
+pub type HandlerFn = fn(&PgConnection, &may_minihttp::Request) -> Result<String, may_postgres::Error>;
+pub type HandlerFn2 = fn(&PgConnection, &may_minihttp::Request, &HashMap<String, String>) -> Result<String, may_postgres::Error>;
+
+pub type WsOnConnectHandler = fn(&str, &mut TcpStream, &mut WsContext) -> io::Result<()>;
+pub type WsOnMessageHandler = fn(&str, &mut TcpStream, &mut WsContext, Option<&str>) -> io::Result<()>;
+pub type WsOnCloseHandler = fn(&str, &mut TcpStream, &mut WsContext, u16, &str) -> io::Result<()>;
 
 lazy_static! {{
     pub static ref ROUTES: HashMap<&'static str, HandlerFn> = {{
@@ -1507,6 +1630,24 @@ lazy_static! {{
     pub static ref PARAMETERIZED_ROUTES: HashMap<&'static str, HandlerFn2> = {{
         let mut map = HashMap::new();
         {};
+        map
+    }};
+
+    pub static ref WS_ONCONNECT_ROUTES: HashMap<&'static str, WsOnConnectHandler> = {{
+        let mut map = HashMap::new();
+        {}
+        map
+    }};
+
+    pub static ref WS_ONMESSAGE_ROUTES: HashMap<&'static str, WsOnMessageHandler> = {{
+        let mut map = HashMap::new();
+        {}
+        map
+    }};
+
+    pub static ref WS_ONCLOSE_ROUTES: HashMap<&'static str, WsOnCloseHandler> = {{
+        let mut map = HashMap::new();
+        {}
         map
     }};
 }}
@@ -1521,7 +1662,23 @@ lazy_static! {{
             .iter()
             .map(|route| format!("map.insert{};", route))
             .collect::<Vec<_>>()
+            .join("\n        "),
+        ws_onconnect_routes
+            .iter()
+            .map(|route| format!("map.insert{};", route))
+            .collect::<Vec<_>>()
+            .join("\n        "),
+        ws_onmessage_routes
+            .iter()
+            .map(|route| format!("map.insert{};", route))
+            .collect::<Vec<_>>()
+            .join("\n        "),
+        ws_onclose_routes
+            .iter()
+            .map(|route| format!("map.insert{};", route))
+            .collect::<Vec<_>>()
             .join("\n        ")
+
     );
 
     mod_rs_file.write_all(&generated_code.into_bytes()).unwrap();
@@ -1614,6 +1771,132 @@ fn handle_android(path: &str, nav: &mut String, nav2: &mut String) {
     }
 }
 
+fn update_struct_doc(struct_doc: &str, new_paths: &[String], new_tags: &[String], new_schemas: &[String], mut filename2: &str) -> String {
+    let mut updated_doc = struct_doc.to_string();
+
+        filename2 = filename2.strip_prefix("./.project_build/src/server/").unwrap().strip_suffix(".rs").unwrap();
+            // Update bagian paths
+    {
+        let re_paths = Regex::new(r"paths\((?P<paths>[^)]*)\)").unwrap();
+        updated_doc = re_paths.replace(&updated_doc, |caps: &regex::Captures| {
+            let existing = caps.name("paths").unwrap().as_str().trim();
+            let added = new_paths.join(", ");
+            let merged = if existing.is_empty() { added } else { format!("{}, {}", existing, added) };
+            format!("paths({})", merged)
+        }).to_string();
+    }
+
+    // Update bagian tags
+    {
+        let re_tags = Regex::new(r"tags\((?P<tags>[^)]*)\)").unwrap();
+        updated_doc = re_tags.replace(&updated_doc, |caps: &regex::Captures| {
+            let existing = caps.name("tags").unwrap().as_str().trim();
+            let added = new_tags.join(", ");
+            let merged = if existing.is_empty() { added } else { format!("{}, {}", existing, added) };
+            format!("tags({})", merged)
+        }).to_string();
+    }
+
+    // Update bagian schemas
+    {
+        let re_schemas = Regex::new(r"schemas\((?P<schemas>[^)]*)\)").unwrap();
+        updated_doc = re_schemas.replace(&updated_doc, |caps: &regex::Captures| {
+            let existing = caps.name("schemas").unwrap().as_str().trim();
+            let added = new_schemas.join(", ");
+            let merged = if existing.is_empty() { added } else { format!("{}, {}", existing, added) };
+            format!("schemas({})", merged)
+        }).to_string();
+    }
+
+    updated_doc = format!("use crate::server::{}::*; {}", filename2, updated_doc);
+    updated_doc
+}
+
+fn transform_handler(input: &str, filename2: &str) -> io::Result<String> {
+    let struct_doc_file = "./.project_build/src/doc.rs";
+
+    if !Path::new(struct_doc_file).exists() {
+        if !*DOC_CONFIGURED.read().unwrap() {
+            let config_file = fs::read_to_string("./config.json").unwrap();
+    let app_config: AppConfig = serde_json::from_str(&config_file).unwrap();
+
+        let default_doc = format!("
+use utoipa::OpenApi;
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = \"{}\",
+        description = \"{}\",
+        version = \"{}\"
+    ),
+    paths(),
+    components(schemas()),
+    tags()
+)]
+pub struct ApiDoc;", app_config.name, app_config.description, app_config.version);
+        fs::write(struct_doc_file, default_doc)?;
+        *DOC_CONFIGURED.write().unwrap() = true;
+    }
+    }
+
+    let struct_doc_lama = fs::read_to_string(struct_doc_file)?;
+
+    let re = Regex::new(
+        r"(?s)(//\s*name\s*(?P<name>[^,]+),\s*about\s*(?P<about>[^,]+),\s*(?P<status200>\d+)\s+(?P<desc200>[^,]+),\s*(?P<status500>\d+)\s+(?P<desc500>[^,]+),\s*body\s+(?P<body>[^\n]+)\s*)(?P<fn>pub\s+fn\s+(?P<fname>\w+)\s*\([^)]*\)\s*->\s*[^\\{]*\{(?P<func_body>.*?)\})"
+    ).unwrap();
+
+    let mut new_paths = Vec::new();
+    let mut new_tags  = Vec::new();
+    let mut new_schemas = Vec::new();
+
+    let transformed_code = re.replace_all(input, |caps: &regex::Captures| {
+        let name      = caps.name("name").unwrap().as_str().trim();
+        let about     = caps.name("about").unwrap().as_str().trim();
+        let status200 = caps.name("status200").unwrap().as_str().trim();
+        let desc200   = caps.name("desc200").unwrap().as_str().trim();
+        let status500 = caps.name("status500").unwrap().as_str().trim();
+        let desc500   = caps.name("desc500").unwrap().as_str().trim();
+        let body      = caps.name("body").unwrap().as_str().trim();
+        let fn_block  = caps.name("fn").unwrap().as_str();
+        let fname     = caps.name("fname").unwrap().as_str();
+
+        new_paths.push(fname.to_string());
+        new_tags.push(format!("(name = \"{}\", description = \"{}\")", name, about));
+        new_schemas.push(body.to_string());
+
+        let method = match fname {
+            "get" => "get",
+            "post" => "post",
+            "put" => "put",
+            "delete" => "delete",
+            _ => "get",
+        };
+
+        let attribute = format!(
+r#"
+#[utoipa::path(
+    {},
+    path = "/{}",
+    responses(
+        (status = {}, description = "{}", body = {}),
+        (status = {}, description = "{}")
+    ),
+    tag = "{}"
+)]"#,
+            method, name, status200, desc200, body, status500, desc500, name
+        );
+
+        format!("{}\n{}", attribute, fn_block)
+    }).to_string();
+
+    let updated_struct_doc = update_struct_doc(&struct_doc_lama, &new_paths, &new_tags, &new_schemas, filename2);
+
+    fs::write(struct_doc_file, &updated_struct_doc)?;
+
+    Ok(transformed_code)
+}
+
 fn main() -> io::Result<()> {
     let matches = Command::new("ubi")
         .version("1.0")
@@ -1670,6 +1953,7 @@ fn main() -> io::Result<()> {
             let db_dir = Path::new(".project_build/db/postgres");
             fs::create_dir_all(&db_dir)?;
             models_to_sql(Path::new("./routes"));
+            tools::migration::run_sql();
             println!("Created all PostgreSQL tables successfully!");
         },
         Some("build") => {
@@ -1678,6 +1962,11 @@ fn main() -> io::Result<()> {
             let project_build_dir = env::current_dir().unwrap().join(".project_build");
             let libs_build_dir = project_build_dir.clone().join("libs");
             let final_build_dir = env::current_dir().unwrap().join("build");
+            let old_doc = Path::new("./.project_build/src/doc.rs");
+
+            if old_doc.exists() {
+                fs::remove_file(&old_doc).unwrap();
+            }
 
             if final_build_dir.exists() {
                 fs::remove_dir_all(&final_build_dir).expect("Gagal menghapus direktori lama");
@@ -1703,6 +1992,10 @@ fn main() -> io::Result<()> {
                 .expect("Compiling failed");
 
             generate_mod_rs("./.project_build/src/server");
+
+            let doc_path = current_dir.join("doc.html");
+            let mut doc_file = fs::File::create(&doc_path).unwrap();
+            doc_file.write_all(DOC_HTML.as_bytes()).unwrap();
 
             let cargo_path = current_dir.join("Cargo.toml");
             let mut cargo_file = fs::File::create(&cargo_path).expect("Compiling failed");
@@ -1752,12 +2045,10 @@ let output_dir = PathBuf::from(".project_build/android");
         let path = PathBuf::from(file.as_ref());
         let target_path = output_dir.join(&path);
 
-        // Jika ada subfolder, buat dulu
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // Simpan file dari embedded data
         if let Some(content) = Android::get(file.as_ref()) {
             fs::write(&target_path, content.data)?;
          }

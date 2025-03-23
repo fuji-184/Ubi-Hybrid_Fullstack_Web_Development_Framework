@@ -13,6 +13,9 @@ serde_json = "*"
 walkdir = "*"
 postgres-types = "0.2.9"
 rust-embed = "8.6.0"
+may_postgres = { git = "https://github.com/Xudong-Huang/may_postgres.git", default-features = false }
+serde = { version = "*", features = ["derive"] }
+
 # compact_str = { version = "*", features = ["serde", "smallvec"] }
 
 # [profile.release]

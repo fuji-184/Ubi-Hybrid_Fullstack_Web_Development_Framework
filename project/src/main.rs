@@ -10,10 +10,12 @@ extern crate may;
 extern crate may_minihttp;
 
 mod server;
+mod doc;
 
 const CONFIG: &str = include_str!("../config.json");
+const DOC_HTML: &str = include_str!("../doc.html");
 
-use may_minihttp::{HttpService, HttpServiceFactory, Request, Response};
+use may_minihttp::{HttpService, HttpServiceFactory, Request, Response, WsService, WsContext};
 use may_postgres::{types::ToSql, Client, Statement};
 // use smallvec::SmallVec;
 use lazy_static::lazy_static;
@@ -30,6 +32,13 @@ use serde_json::{json, Value};
 use rust_embed::RustEmbed;
 use compact_str::{ToCompactString, format_compact, CompactString};
 use regex::Regex;
+
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+use std::io::Write;
+use std::sync::OnceLock;
+
+use utoipa::{Modify, OpenApi, ToSchema};
 
 #[derive(RustEmbed)]
 #[folder = "build/"]
@@ -63,6 +72,8 @@ lazy_static! {
     };
 }
 
+static OPEN_API: OnceLock<String> = OnceLock::new();
+
 #[derive(Debug, Serialize, Deserialize)]
 struct PostgresConfig {
     host: String,
@@ -75,6 +86,8 @@ struct PostgresConfig {
 #[derive(Debug, Serialize, Deserialize)]
 struct AppConfig {
     name: String,
+    description: String,
+    version: String,
     port: u16,
     postgres: PostgresConfig,
 }
@@ -159,6 +172,46 @@ impl PgPool {
     }
 }
 
+struct Ws;
+
+impl WsService for Ws {
+    fn on_connect(&mut self, stream: &mut may::net::TcpStream, ctx: &mut WsContext, path: &str) -> io::Result<()> {
+
+        if let Some(handler) = server::WS_ONCONNECT_ROUTES.get(format_compact!("/ws{}/onconnect", path.strip_suffix("/").unwrap_or(path)).as_str()) {
+            handler("", stream, ctx)?;
+        }
+
+        Ok(())
+    }
+
+    fn on_message(&mut self, stream: &mut may::net::TcpStream, opcode: u8, payload: &[u8], ctx: &mut WsContext, path: &str) -> io::Result<()> {
+       match opcode {
+            0x1 => { // Text message
+               if let Some(handler) = server::WS_ONMESSAGE_ROUTES.get(format_compact!("/ws{}/onmessage", path.strip_suffix("/").unwrap_or(path)).as_str()) {
+                    let pesan = String::from_utf8(payload.to_vec()).unwrap();
+                   handler("", stream, ctx, Some(&pesan))?;
+                }
+            },
+            0x2 => { // Binary message
+                if let Some(handler) = server::WS_ONMESSAGE_ROUTES.get(format_compact!("/ws{}/onmessage", path.strip_suffix("/").unwrap_or(path)).as_str()) {
+                    let pesan = String::from_utf8(payload.to_vec()).unwrap();
+                    handler("", stream, ctx, Some(&pesan))?;
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn on_close(&mut self, stream: &mut may::net::TcpStream, code: u16, reason: &str, ctx: &mut WsContext, path: &str) -> io::Result<()> {
+
+        if let Some(handler) = server::WS_ONCLOSE_ROUTES.get(format_compact!("/ws{}/onclose", path.strip_suffix("/").unwrap_or(path)).as_str()) {
+            handler("", stream, ctx, code, reason)?;
+        }
+
+        Ok(())
+    }
+}
 
 impl HttpService for Context {
     fn call(&mut self, req: Request, res: &mut Response) -> io::Result<()> {
@@ -170,7 +223,7 @@ impl HttpService for Context {
                     "GET" => {
                         isi = match server::ROUTES.get(format_compact!("{}/get", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                                 Some(handler) => {
-                                                match handler(&self.db, req) {
+                                                match handler(&self.db, &req) {
                                                         Ok(response) =>response,
                                                         Err(e) => format!("Error: {}", e),
                                                     }
@@ -179,7 +232,7 @@ impl HttpService for Context {
                                                     let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
                                                 }
@@ -189,7 +242,7 @@ impl HttpService for Context {
                     "POST" => {
                         isi = match server::ROUTES.get(format_compact!("{}/post", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                         Some(handler) => {
-                                                match handler(&self.db, req) {
+                                                match handler(&self.db, &req) {
                                                 Ok(response) => response,
                                                 Err(e) => format!("Error: {}", e),
                                             }
@@ -198,7 +251,7 @@ impl HttpService for Context {
                                             let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -209,7 +262,7 @@ impl HttpService for Context {
                     "UPDATE" => {
                         isi = match server::ROUTES.get(format_compact!("{}/update", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                                 Some(handler) => {
-                                                match handler(&self.db, req) {
+                                                match handler(&self.db, &req) {
                                                         Ok(response) =>response,
                                                         Err(e) => format!("Error: {}", e),
                                                     }
@@ -218,7 +271,7 @@ impl HttpService for Context {
                                                     let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -229,7 +282,7 @@ impl HttpService for Context {
                     "DELETE" => {
                         isi = match server::ROUTES.get(format_compact!("{}/delete", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                         Some(handler) => {
-                                match handler(&self.db, req) {
+                                match handler(&self.db, &req) {
                                         Ok(response) =>response,
                                         Err(e) => format!("Error: {}", e),
                                     }
@@ -238,7 +291,7 @@ impl HttpService for Context {
                                 let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -248,6 +301,24 @@ impl HttpService for Context {
                     },
                     _ => isi = "not found".to_string()
                 }
+
+                let last_modified = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                let etag = format!("W/\"{}\"", last_modified);
+
+                res.header_str(format!("Last-Modified: {}", last_modified));
+                res.header_str(format!("ETag: {}", etag));
+
+
+
+if let Some(etag_header) = req.headers().iter().find(|header| header.name == "If-None-Match") {
+
+
+if etag_header.value == etag.as_bytes() {
+                        res.status_code(304, "Not Modified");
+                        return Ok(());
+                    }
+                }
+
 
                 res.header("content-type: application/json").body_vec(isi.into_bytes());
             }
@@ -286,6 +357,33 @@ impl HttpService for Context {
             }
             path if path.starts_with("/static") => {
                 let path = req.path();
+
+                let path_obj = Path::new(&path);
+
+                if let Ok(metadata) = fs::metadata(path_obj) {
+                    if let Ok(modified_time) = metadata.modified() {
+                        let last_modified = modified_time
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+
+                        res.header_str(format!("Last-Modified: {}", last_modified));
+
+                        let etag = format!("W/\"{}\"", last_modified);
+                        res.header_str(format!("ETag: {}", etag));
+
+
+
+if let Some(etag_header) = req.headers().iter().find(|header| header.name == "If-None-Match") {
+
+if etag_header.value == etag.as_bytes() {
+                                res.status_code(304, "Not Modified");
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
                 match fs::read(format_compact!(".{}", path)) {
                     Ok(contents) => {
                         res.header(get_mime_type(path.to_string()))
@@ -299,6 +397,22 @@ impl HttpService for Context {
                 }?;
                 return Ok(());
             }
+
+
+"/doc" => {
+        res.header("Content-Type: text/html");
+        res.body_vec(DOC_HTML.into());
+}
+
+
+"/openapi.json" => {
+        res.header("Content-Type: application/json");
+        res.body_vec(OPEN_API.get().unwrap().as_bytes().to_vec());
+}
+
+
+
+
             _ => {
                 if !req.path().ends_with("/") {
                     match Frontend::get(&format_compact!("{}/index.html", req.path().strip_prefix("/").unwrap())) {
@@ -316,6 +430,15 @@ impl HttpService for Context {
                 }
             }
         }
+
+  let last_modified = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                let etag = format!("W/\"{}\"", last_modified);
+
+                res.header_str(format!("Last-Modified: {}", last_modified));
+                res.header_str(format!("ETag: {}", etag));
+
+
+
         Ok(())
     }
 }
@@ -326,11 +449,16 @@ struct Server {
 
 impl HttpServiceFactory for Server {
     type Service = Context;
+    type MyWsService = Ws;
 
     fn new_service(&self, id: usize) -> Self::Service {
         Context {
                db: self.db_pool.get_connection(id),
         }
+    }
+
+    fn new_ws_service(&self) -> Self::MyWsService {
+        Ws {}
     }
 }
 
@@ -344,7 +472,6 @@ fn get_mime_type(path: String) -> &'static str {
         .get(ext)
         .unwrap_or(&"content_type: application/octet-stream")
 }
-
 
 pub fn parameterized_url(pattern: &str, url: &str) -> Option<std::collections::HashMap<String, String>> {
     let re_str = Regex::new(r":([^/]+)").unwrap();
@@ -377,6 +504,13 @@ fn match_url(url: &str) -> Option<(server::HandlerFn2, HashMap<String, String>)>
 }
 
 fn main() -> io::Result<()> {
+    let openapi = doc::ApiDoc::openapi();
+
+    // Konversi ke JSON string
+    let openapi_json = serde_json::to_string_pretty(&openapi).expect("Failed to serialize OpenAPI");
+    println!("{}", openapi_json);
+
+    OPEN_API.set(openapi_json).unwrap();
 
     may::config().set_pool_capacity(1000).set_stack_size(0x1000);
 
