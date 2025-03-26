@@ -9,5 +9,6 @@
         "name": "tes",
         "username": "postgres",
         "password": "fuji"
-    }
+    },
+    "features": [""]
 }

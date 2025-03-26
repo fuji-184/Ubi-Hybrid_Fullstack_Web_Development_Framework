@@ -11,11 +11,12 @@ extern crate may_minihttp;
 
 mod server;
 mod doc;
+mod middleware;
 
 const CONFIG: &str = include_str!("../config.json");
 const DOC_HTML: &str = include_str!("../doc.html");
 
-use may_minihttp::{HttpService, HttpServiceFactory, Request, Response, WsService, WsContext};
+use may_minihttp::{HttpService, HttpServiceFactory, Request, Response};
 use may_postgres::{types::ToSql, Client, Statement};
 // use smallvec::SmallVec;
 use lazy_static::lazy_static;
@@ -39,6 +40,9 @@ use std::io::Write;
 use std::sync::OnceLock;
 
 use utoipa::{Modify, OpenApi, ToSchema};
+
+#[cfg(feature = "ws")]
+use may_minihttp::{ WsService, WsContext};
 
 #[derive(RustEmbed)]
 #[folder = "build/"]
@@ -90,6 +94,7 @@ struct AppConfig {
     version: String,
     port: u16,
     postgres: PostgresConfig,
+    features: Vec<String>
 }
 
 struct Context {
@@ -172,8 +177,10 @@ impl PgPool {
     }
 }
 
+#[cfg(feature = "ws")]
 struct Ws;
 
+#[cfg(feature = "ws")]
 impl WsService for Ws {
     fn on_connect(&mut self, stream: &mut may::net::TcpStream, ctx: &mut WsContext, path: &str) -> io::Result<()> {
 
@@ -215,6 +222,17 @@ impl WsService for Ws {
 
 impl HttpService for Context {
     fn call(&mut self, req: Request, res: &mut Response) -> io::Result<()> {
+
+        match middleware::MIDDLEWARE_ROUTES.get(req.path()) {
+            Some(handler) => {
+                if !handler(res) {
+                    res.header("content-type: application/json");
+                    return Ok(());
+                };
+            }
+            None => {}
+        }
+
         match req.path() {
             path if path.starts_with("/api") => {
                 let mut isi = String::new();
@@ -223,7 +241,7 @@ impl HttpService for Context {
                     "GET" => {
                         isi = match server::ROUTES.get(format_compact!("{}/get", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                                 Some(handler) => {
-                                                match handler(&self.db, &req) {
+                                                match handler(&self.db, req) {
                                                         Ok(response) =>response,
                                                         Err(e) => format!("Error: {}", e),
                                                     }
@@ -232,7 +250,7 @@ impl HttpService for Context {
                                                     let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
                                                 }
@@ -242,7 +260,7 @@ impl HttpService for Context {
                     "POST" => {
                         isi = match server::ROUTES.get(format_compact!("{}/post", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                         Some(handler) => {
-                                                match handler(&self.db, &req) {
+                                                match handler(&self.db, req) {
                                                 Ok(response) => response,
                                                 Err(e) => format!("Error: {}", e),
                                             }
@@ -251,7 +269,7 @@ impl HttpService for Context {
                                             let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -262,7 +280,7 @@ impl HttpService for Context {
                     "UPDATE" => {
                         isi = match server::ROUTES.get(format_compact!("{}/update", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                                 Some(handler) => {
-                                                match handler(&self.db, &req) {
+                                                match handler(&self.db, req) {
                                                         Ok(response) =>response,
                                                         Err(e) => format!("Error: {}", e),
                                                     }
@@ -271,7 +289,7 @@ impl HttpService for Context {
                                                     let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -282,7 +300,7 @@ impl HttpService for Context {
                     "DELETE" => {
                         isi = match server::ROUTES.get(format_compact!("{}/delete", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                         Some(handler) => {
-                                match handler(&self.db, &req) {
+                                match handler(&self.db, req) {
                                         Ok(response) =>response,
                                         Err(e) => format!("Error: {}", e),
                                     }
@@ -291,7 +309,7 @@ impl HttpService for Context {
                                 let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
 
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, &req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -302,15 +320,15 @@ impl HttpService for Context {
                     _ => isi = "not found".to_string()
                 }
 
-                let last_modified = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                let etag = format!("W/\"{}\"", last_modified);
+                // let last_modified = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                // let etag = format!("W/\"{}\"", last_modified);
 
-                res.header_str(format!("Last-Modified: {}", last_modified));
-                res.header_str(format!("ETag: {}", etag));
+                // res.header_str(format!("Last-Modified: {}", last_modified));
+                // res.header_str(format!("ETag: {}", etag));
 
 
 
-if let Some(etag_header) = req.headers().iter().find(|header| header.name == "If-None-Match") {
+/* if let Some(etag_header) = req.headers().iter().find(|header| header.name == "If-None-Match") {
 
 
 if etag_header.value == etag.as_bytes() {
@@ -318,14 +336,14 @@ if etag_header.value == etag.as_bytes() {
                         return Ok(());
                     }
                 }
-
+*/
 
                 res.header("content-type: application/json").body_vec(isi.into_bytes());
             }
             path if path.starts_with("/parts") => {
                 if !req.path().ends_with("/") {
                     // println!("path 1: {}", req.path().strip_prefix("/parts/").unwrap());
-                    match Frontend::get(&format_compact!("{}/ui.js", req.path().strip_prefix("/parts/").unwrap())) {
+                    match Frontend::get(&format_compact!("{}/ui.html", req.path().strip_prefix("/parts/").unwrap())) {
                         Some(isi) => {
                             res.header("content-type: text/plain").body_vec(isi.data.to_vec());
                         }
@@ -337,7 +355,7 @@ if etag_header.value == etag.as_bytes() {
                     let mut path = req.path().strip_prefix("/parts/").unwrap();
                     path = path.strip_prefix("/").unwrap_or(path);
                     // println!("path sebelum: {}, path 2: {}", req.path(), path);
-                    let part = Frontend::get(&format_compact!("{}ui.js", path)).unwrap();
+                    let part = Frontend::get(&format_compact!("{}ui.html", path)).unwrap();
                     res.header("content-type: text/plain").body_vec(part.data.to_vec());
                 }
             }
@@ -358,8 +376,8 @@ if etag_header.value == etag.as_bytes() {
             path if path.starts_with("/static") => {
                 let path = req.path();
 
-                let path_obj = Path::new(&path);
-
+ //               let path_obj = Path::new(&path);
+/*
                 if let Ok(metadata) = fs::metadata(path_obj) {
                     if let Ok(modified_time) = metadata.modified() {
                         let last_modified = modified_time
@@ -383,7 +401,7 @@ if etag_header.value == etag.as_bytes() {
                         }
                     }
                 }
-
+*/
                 match fs::read(format_compact!(".{}", path)) {
                     Ok(contents) => {
                         res.header(get_mime_type(path.to_string()))
@@ -449,6 +467,8 @@ struct Server {
 
 impl HttpServiceFactory for Server {
     type Service = Context;
+
+    #[cfg(feature = "ws")]
     type MyWsService = Ws;
 
     fn new_service(&self, id: usize) -> Self::Service {
@@ -457,6 +477,7 @@ impl HttpServiceFactory for Server {
         }
     }
 
+    #[cfg(feature = "ws")]
     fn new_ws_service(&self) -> Self::MyWsService {
         Ws {}
     }
@@ -496,10 +517,7 @@ fn match_url(url: &str) -> Option<(server::HandlerFn2, HashMap<String, String>)>
         if let Some(params) = parameterized_url(pattern, url) {
             return Some((*handler, params));
         }
-        println!("pattern : {}", pattern);
-        println!("url : {}", url);
     }
-    println!("failed to loop parameterized loop");
     None
 }
 
@@ -508,15 +526,11 @@ fn main() -> io::Result<()> {
 
     // Konversi ke JSON string
     let openapi_json = serde_json::to_string_pretty(&openapi).expect("Failed to serialize OpenAPI");
-    println!("{}", openapi_json);
-
     OPEN_API.set(openapi_json).unwrap();
 
     may::config().set_pool_capacity(1000).set_stack_size(0x1000);
 
     let app_config: AppConfig = serde_json::from_str(CONFIG).unwrap();
-    println!("{:?}", app_config);
-
     let db_url = format!(
         "postgresql://{}:{}@{}:{}/{}",
         app_config.postgres.username,
@@ -525,18 +539,17 @@ fn main() -> io::Result<()> {
         app_config.postgres.port,
         app_config.postgres.name
     );
-    println!("{}", db_url);
-
-       let server = Server {
+    let server = Server {
         db_pool: PgPool::new(db_url.leak(), num_cpus::get()),
     };
+
+    println!("Yuhuu, server listening on port : {}. Untuk mengakses url API backend diawali dengan /api, contohnya /api/users", app_config.port);
 
     server
         .start(format!("0.0.0.0:{}", app_config.port))
         .unwrap()
         .join()
         .unwrap();
-    println!("Yuhuu, server listening on port : {}. Untuk mengakses url API backend diawali dengan /api, contohnya /api/users", app_config.port);
 
     Ok(())
 }

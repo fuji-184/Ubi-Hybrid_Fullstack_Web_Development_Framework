@@ -16,7 +16,9 @@ use ::std::{
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
     os::unix::fs as unix_fs,
-    collections::{HashMap, HashSet}
+    collections::{HashMap, HashSet},
+    sync::mpsc::channel,
+    time::Duration
 };
 use clap::{Arg, Command};
 use include_dir::{include_dir, Dir};
@@ -26,6 +28,7 @@ use serde_json::Value;
 use uuid::Uuid;
 use walkdir::WalkDir;
 use serde::{Serialize, Deserialize};
+use notify::{Watcher, RecursiveMode, RecommendedWatcher};
 // use compact_str::{format_compact, CompactString, ToCompactString};
 
 const CARGO_TOML: &str = include_str!("../project/Cargo.toml");
@@ -55,6 +58,7 @@ struct AppConfig {
     version: String,
     port: u16,
     postgres: PostgresConfig,
+    features: Vec<String>
 }
 
 #[derive(rust_embed::RustEmbed)]
@@ -90,6 +94,8 @@ fn build_ubi() -> io::Result<()> {
 
     handle_files(client_dir)?;
 
+    generate_mod_rs_middleware("./.project_build/src/middleware");
+
     Ok(())
 }
 
@@ -98,7 +104,7 @@ fn cek_file(path_str: &str) -> bool {
 
     let nama_sesuai = path.file_stem()
         .and_then(|stem| stem.to_str())
-        .map(|name| name == "server" || name == "ws")
+        .map(|name| name == "server" || name == "ws" || name == "middleware")
         .unwrap_or(false);
 
     let ekstensi_sesuai = matches!(
@@ -186,8 +192,7 @@ fn handle_files(dir: &Path) -> io::Result<()> {
 }
 
 fn resolve_imports(path: &Path) -> io::Result<String> {
-    let mut content = fs::read_to_string(path)?;
-
+    let mut content = render_slot(path.to_str().unwrap().strip_suffix("ui.ubi").unwrap());
     let re = regex::Regex::new(r#"<ubi\+\s*"(.*?)">"#).unwrap();
 
     let mut replacements = Vec::new();
@@ -215,7 +220,7 @@ fn handle_if(input: &str, js_input: &str) -> (String, String) {
     let mut js = String::new();
     let mut last_pos = 0;
 
-    let variables = get_variables(js_input, ":[1] :[2] = new Signal", ":[2]", ".js").unwrap();
+    let variables = get_variables(js_input);
 
     for cap in re.captures_iter(input) {
         let full_match = cap.get(0).unwrap();
@@ -331,7 +336,7 @@ fn handle_for(input: &str, js_input: &str) -> (String, String) {
     let mut last_pos = 0;
     let mut isi_for: Vec<String> = Vec::new();
 
-    let variables = get_variables(js_input, ":[1] :[2] = new Signal", ":[2]", ".js").unwrap();
+    let variables = get_variables(js_input);
 
     for cap in re.captures_iter(input) {
         let full_match = cap.get(0).unwrap();
@@ -379,7 +384,7 @@ function render_{id}() {{
         {id}.appendChild(div);
     }});
 }}
-effect(render_{id});
+effect(() => render_{id}());
 "#
                         )
                     } else {
@@ -448,14 +453,14 @@ fn process_conversion(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut intermediate_output = std::fs::read_to_string(input_file)?;
 
-        if !input_file.contains("model.ts") && !input_file.contains("ws.ts") && input_file.contains("server.ts")
-    && Path::new(&input_file.replace("server.ts", "model.ts").replace("server.py", "model.ts")
+        if !input_file.contains("model.ts") && input_file.contains("server.ts") && Path::new(&input_file.replace("server.ts", "model.ts").replace("server.py", "model.ts")
             .replace("server.ubi", "model.rs")).exists() {
         let model = std::fs::read_to_string(input_file.replace("server.ts", "model.ts").replace("server.py", "model.ts").replace("server.ubi", "model.ts"))?;
         intermediate_output += &model;
-        intermediate_output = transform_spawn_shared(&intermediate_output);
         intermediate_output = transform_type(&intermediate_output);
     }
+
+    intermediate_output = transform_spawn_shared(&intermediate_output);
 
     for (input, output) in input_templates.iter().zip(output_templates.iter()) {
         let mut output_result = StdCommand::new(ubi_path().join("cb"))
@@ -495,12 +500,137 @@ fn process_conversion(
     Ok(())
 }
 
+fn convert_middleware(
+    input_file: &str,
+    out_filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    StdCommand::new(ubi_path().join("dp"))
+        .arg("fmt")
+        .current_dir("./.project_build")
+        .output()
+        .expect("Compiling failed");
+
+        let input_templates = vec![
+        "function middleware(): boolean { :[1] }",
+       // struct json
+        r#"// json
+        type :[1] = { :[2] };"#,
+        // struct
+        r#"type :[1] = { :[2] };"#,
+        // string struct
+        ":[1]: string;",
+        // number struct
+        ":[1]: number;",
+        // boolean struct
+        ":[1]: boolean",
+        // function returns string
+        "function :[1](:[2]): string {\n:[4]\n}",
+        // function
+        "function :[1](:[2]): :[3] {\n:[4]\n}",
+        // json stringify
+        "ubi.json(:[1])",
+        "ubi.req.params(:[1])",
+        // print
+        "console.log(:[1])",
+        // string literal
+        "\":[1]\"",
+        // db query
+        "let :[1]: :[2] = ubi.query(:[3].to_string())",
+        "ubi.query(:[1].to_string(), null)",
+        "ubi.query(:[1].to_string(), :[2])",
+        "let :[1]: :[2] = db.query(:[3])",
+        // array literal
+        "= [:[1]]",
+        // array literal in argument
+        "([:[1]])",
+        // array type
+        "Array<:[1]>",
+        // array type 2
+        ": :[1][]",
+        "\"{:?}\".to_string()",
+        ": :[1] = {:[2]}",
+        "ubi.req.data",
+        // coroutine
+        "spawn_isolated(() => {:[1]})",
+        "spawn_shared(:[1])",
+        "shared(:[1])",
+        "lock(:[1])",
+        "null",
+        ": string =",
+        "ubi.res(:[1])"
+    ].into_iter().map(String::from).collect();
+
+    let output_templates = vec![
+        "pub fn middleware(res: &mut may_minihttp::Response) -> bool { :[1] }",
+        // struct
+        r#"#[derive(Debug, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+        pub struct :[1] { :[2] }"#,
+        // struct
+        "struct :[1] { :[2] }",
+        // string struct
+        ":[1]: String,",
+        // number struct
+        ":[1]: i32,",
+        // boolean struct
+        ":[1]: bool",
+
+        // function returns string
+        "fn :[1](:[2]) -> String {\n:[4]\n}",
+        // function
+        "fn :[1](:[2]) -> :[3] {\n:[4]\n}",
+        // json stringify
+        "serde_json::json!(&:[1]).to_string()",
+        "req_params.get(&:[1])",
+        // print
+        "println!(\"{:?}\", :[1])",
+        // string literal
+        "\":[1]\".to_string()",
+        // db query
+        "let :[1] = db.query(:[3])?",
+        "db.query(:[1], None)?",
+        "db.query(:[1], Some(&:[2]))?",
+        "let :[1] = db.query(:[3])",
+        // array literal
+        "= vec![:[1]]",
+        // array literal in argument
+        "(vec![:[1]])",
+        // array type
+        "Vec<:[1]>",
+        // array type 2
+        ": Vec<:[1]>",
+        "\"{:?}\"",
+        " = :[1] {:[2]}",
+        "serde_json::from_slice(req.body().fill_buf().unwrap()).unwrap()",
+        // coroutine
+        "go!(move || { :[1] })",
+        "go!(move || { :[1] })",
+        "std::sync::Arc::new(may::sync::Mutex::new(:[1]))",
+        ":[1].lock().unwrap()",
+        "None",
+        ": String =",
+        "res.body_vec(:[1].into_bytes())"
+    ].into_iter().map(String::from).collect();
+
+    let _ = process_conversion(
+        &input_templates,
+        &output_templates,
+        input_file,
+        out_filename,
+        ".ts"
+    );
+
+    generate_run_middleware(out_filename);
+
+    Ok(())
+}
+
 fn convert_ts_to_rust(
     input_file: &str,
     out_filename: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     StdCommand::new(ubi_path().join("dp"))
         .arg("fmt")
+        .current_dir("./.project_build")
         .output()
         .expect("Compiling failed");
 
@@ -517,10 +647,10 @@ fn convert_ts_to_rust(
         ].into_iter().map(String::from));
 
         output_templates.extend(vec![
-                   "pub fn get(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn post(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn update(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn delete(db: &crate::PgConnection, req: &may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
         ].into_iter().map(String::from));
     } else {
         input_templates.extend(vec![
@@ -532,10 +662,10 @@ fn convert_ts_to_rust(
         ].into_iter().map(String::from));
 
         output_templates.extend(vec![
-                   "pub fn get(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn post(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn update(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn delete(db: &crate::PgConnection, req: &may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
         ].into_iter().map(String::from));
     }
 
@@ -589,7 +719,7 @@ fn convert_ts_to_rust(
         "shared(:[1])",
         "lock(:[1])",
         "null",
-        ": string"
+        ": string ="
     ];
 
     let output_templates2 = vec![
@@ -660,7 +790,7 @@ fn convert_ts_to_rust(
         "std::sync::Arc::new(may::sync::Mutex::new(:[1]))",
         ":[1].lock().unwrap()",
         "None",
-        ": String"
+        ": String ="
     ];
 
     input_templates.extend(input_templates2.into_iter().map(String::from));
@@ -972,6 +1102,7 @@ fn convert_ts_to_sql(
 ) -> Result<(), Box<dyn std::error::Error>> {
     StdCommand::new(ubi_path().join("dp"))
         .arg("fmt")
+        .current_dir("./.project_build")
         .output()
         .expect("Compiling failed");
 
@@ -1045,6 +1176,7 @@ fn convert_html_to_kotlin(
 ) -> Result<String, Box<dyn std::error::Error>> {
     StdCommand::new(ubi_path().join("dp"))
         .arg("fmt")
+        .current_dir("./.project_build")
         .output()
         .expect("Compiling failed");
 
@@ -1308,42 +1440,11 @@ fn split_html_js(input: &str) -> (String, String) {
     (html_content, script_content)
 }
 
-fn get_variables(
-    input: &str,
-    matcher: &str,
-    rewriter: &str,
-    extension: &str,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut extract_process = StdCommand::new(ubi_path().join("cb"))
-        .args([
-            matcher,
-            rewriter,
-            "-stdin",
-            "-stdout",
-            "-matcher",
-            extension,
-            "-newline-separated",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-
-    if let Some(mut stdin) = extract_process.stdin.take() {
-        stdin.write_all(input.as_bytes())?;
-    }
-
-    let extract_output = extract_process.wait_with_output()?;
-    if !extract_output.status.success() {
-        return Err("Extraction failed".into());
-    }
-
-    let extracted_vars: Vec<String> = String::from_utf8(extract_output.stdout)?
-        .lines()
-        .map(|s| s.trim().to_string())
-        .collect();
-
-    Ok(extracted_vars)
+fn get_variables(js_code: &str) -> Vec<String> {
+    let re = Regex::new(r"\b(\w+)\s*=\s*new\s+Signal\s*\(").unwrap();
+    re.captures_iter(js_code)
+        .map(|cap| cap[1].to_string())
+        .collect()
 }
 
 fn process_variables(
@@ -1371,8 +1472,22 @@ fn process_variables(
     Ok(hasil_transformasi)
 }
 
+fn extract_styles(html: &str) -> (String, String) {
+    let re = Regex::new(r"(?s)<style.*?>.*?</style>").unwrap();
+
+    let mut combined_styles = String::new();
+    for cap in re.find_iter(html) {
+        combined_styles.push_str(cap.as_str());
+    }
+
+    let clean_html = re.replace_all(html, "").to_string();
+
+    (combined_styles, clean_html)
+}
+
 fn convert_ubi(input: &str, input_path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
-    let (mut html, raw_js) = split_html_js(input);
+    let (style, mut html) = extract_styles(input);
+    let (mut html, raw_js) = split_html_js(&html);
 
     let tmp_ts_file_path = "./.project_build/tmp.ts";
     let mut tmp_ts_file = fs::File::create(tmp_ts_file_path)?;
@@ -1390,9 +1505,9 @@ fn convert_ubi(input: &str, input_path: &PathBuf) -> Result<String, Box<dyn std:
     let mut js_for = String::new();
     (html, js_for) = handle_for(&html, &js);
 
-    let vars = get_variables(&html, "{:[1]}", ":[1]", ".html")?;
-    let mut html_hasil = process_variables(&html, "{:[1]}", "<p class=':[1]'></p>")?;
+    let vars = get_variables(&html);
 
+    let mut html_hasil = process_variables(&html, "{:[1]}", "<p class=':[1]'></p>")?;
     let mut js_new = String::new();
 
     for var in vars.iter() {
@@ -1426,20 +1541,28 @@ fn convert_ubi(input: &str, input_path: &PathBuf) -> Result<String, Box<dyn std:
 
     // process_conversion(&input_templates, &output_templates, input_file, out_filename, ".js")
 
+    html_hasil = style + &html_hasil;
+
     Ok(html_hasil)
 }
 
 fn process_file(input_file: &str, out_filename: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(extension) = Path::new(input_file).extension() {
-        match extension.to_str() {
-            Some("ts") => {
+    if let Some(filename) = Path::new(input_file).file_name() {
+        match filename.to_str() {
+            Some("server.ts") => {
                 convert_ts_to_rust(input_file, out_filename)?;
             }
-            Some("py") => {
+            Some("server.py") => {
                 convert_py_to_rust(input_file, out_filename)?;
             }
-            Some("ubi") => {
+            Some("ui.ubi") => {
                 convert_ubi_to_rust(input_file, out_filename)?;
+            }
+            Some("middleware.ts") => {
+
+                let path = out_filename.replace("./.project_build/src/server", "./.project_build/src/middleware");
+               fs::create_dir_all(Path::new(&path).parent().unwrap()).unwrap();
+                convert_middleware(input_file, &path);
             }
             _ => eprintln!("Format file {} tidak didukung!", input_file),
         }
@@ -1505,6 +1628,105 @@ fn init_ubi(project_name: &str) -> io::Result<()> {
     Ok(())
 }
 
+
+
+fn find_parent_modules(module_path: &str) -> Vec<String> {
+    let module_name = module_path.trim_start_matches("./.project_build/src/middleware/");
+    let parts: Vec<&str> = module_name.trim_end_matches(".rs").split('_').collect();
+    let mut parents = Vec::new();
+
+    for i in 1..parts.len() {
+        let parent = format!("./.project_build/src/middleware/{}.rs", parts[..i].join("_"));
+        parents.push(parent);
+    }
+
+    parents
+}
+
+fn generate_mod_rs_middleware(path: &str) {
+    let entries = fs::read_dir(&path).unwrap();
+
+    let mut mod_rs = String::new();
+    let mut middleware_routes = Vec::new();
+
+    for entry in entries {
+        let path2 = entry.unwrap().path();
+
+        if path2.is_dir() {
+            generate_mod_rs_middleware(path);
+        } else if path2.extension().unwrap_or_default() == "rs" && path2.file_name().unwrap_or_default() != "mod.rs" {
+            let filename = path2.file_name().unwrap().to_str().unwrap().strip_suffix(".rs").unwrap();
+            mod_rs.push_str(&format!("pub mod {};", filename));
+            middleware_routes.push(format!(
+                            "(\"/{}\", {filename}::run_middleware as MiddlewareFn)",
+                            filename.replace("_", "/")
+                            ));
+
+        }
+    }
+
+    let hasil = format!(r#"
+
+use lazy_static::lazy_static;
+use std::collections::HashMap;
+
+        {}
+pub type MiddlewareFn = fn(&mut may_minihttp::Response) -> bool;
+
+lazy_static! {{
+    pub static ref MIDDLEWARE_ROUTES: HashMap<&'static str, MiddlewareFn> = {{
+        let mut map = HashMap::new();
+        {};
+        map
+    }};
+
+}}
+
+
+
+    "#,
+mod_rs,
+     middleware_routes
+            .iter()
+            .map(|route| format!("map.insert{};", route))
+            .collect::<Vec<_>>()
+            .join("\n        "),
+
+    );
+
+    fs::write("./.project_build/src/middleware/mod.rs", hasil).unwrap();
+
+}
+
+fn generate_run_middleware(path: &str) {
+            let path = Path::new(path);
+            let file_name = path.file_name().unwrap().to_str().unwrap();
+            let file_name2 = file_name.strip_suffix(".rs").unwrap();
+
+
+            let mut run_middleware_text = String::from("pub fn run_middleware(res: &mut may_minihttp::Response) -> bool {");
+            let mut local_mod_text = String::new();
+
+            let parents = find_parent_modules(path.to_str().unwrap());
+            for parent in parents {
+                if Path::new(&parent).exists() {
+                    let isi = fs::read_to_string(&parent).unwrap();
+
+                    if isi.contains("pub fn middleware(") {
+                        let parent_filename = Path::new(&parent).file_name().unwrap().to_str().unwrap().strip_suffix(".rs").unwrap();
+                        local_mod_text.push_str(&format!("use crate::middleware::{};", parent_filename));
+                        run_middleware_text.push_str(&format!("if !{}::middleware(res) {{ return false; }}", parent_filename));
+                    }
+                }
+            }
+
+            run_middleware_text.push_str(&format!("if !middleware(res) {{ return false; }}"));
+            let isi_local = fs::read_to_string(&path).unwrap();
+            let hasil = format!("{} {} return true; }} {}", local_mod_text, run_middleware_text, isi_local);
+            fs::write(&path, &hasil).unwrap();
+
+}
+
 fn generate_mod_rs(server_dir: &str) {
     let server_dir = PathBuf::from(server_dir);
     let mod_path = server_dir.join("mod.rs");
@@ -1540,15 +1762,18 @@ fn generate_mod_rs(server_dir: &str) {
                                                 parameterized_routes.push(format!(
                             "(\"/{key}/get\", {filename}::get as HandlerFn2)"
                             ));
-                                            } else if file.contains("pub fn post(") {
+                                            }
+                        if file.contains("pub fn post(") {
                                                 parameterized_routes.push(format!(
                             "(\"/{key}/post\", {filename}::post as HandlerFn2)"
                             ));
-                                            } else if file.contains("pub fn update(") {
+                                            }
+                        if file.contains("pub fn update(") {
                                                 parameterized_routes.push(format!(
                             "(\"/{key}/update\", {filename}::update as HandlerFn2)"
                             ));
-                                            } else if file.contains("pub fn delete(") {
+                                            }
+                        if file.contains("pub fn delete(") {
                                                 parameterized_routes.push(format!(
                             "(\"/{key}/delete\", {filename}::delete as HandlerFn2)"
                             ));
@@ -1559,15 +1784,18 @@ fn generate_mod_rs(server_dir: &str) {
                                                 routes.push(format!(
                             "(\"/{file_name}/get\", {file_name}::get as HandlerFn)"
                             ));
-                                            } else if file.contains("pub fn post(") {
+                                            }
+                        if file.contains("pub fn post(") {
                                                 routes.push(format!(
                             "(\"/{file_name}/post\", {file_name}::post as HandlerFn)"
                             ));
-                                            } else if file.contains("pub fn update(") {
+                                            }
+                        if file.contains("pub fn update(") {
                                                 routes.push(format!(
                             "(\"/{file_name}/update\", {file_name}::update as HandlerFn)"
                             ));
-                                            } else if file.contains("pub fn delete(") {
+                                            }
+                        if file.contains("pub fn delete(") {
                                                 routes.push(format!(
                             "(\"/{file_name}/delete\", {file_name}::delete as HandlerFn)"
                             ));
@@ -1607,19 +1835,43 @@ fn generate_mod_rs(server_dir: &str) {
 use std::collections::HashMap;
 use lazy_static::lazy_static;
 use crate::PgConnection;
-use may_minihttp::WsContext;
 use may::net::TcpStream;
 use std::io;
 
+#[cfg(feature = "ws")]
+use may_minihttp::WsContext;
+
 {}
 
-pub type HandlerFn = fn(&PgConnection, &may_minihttp::Request) -> Result<String, may_postgres::Error>;
-pub type HandlerFn2 = fn(&PgConnection, &may_minihttp::Request, &HashMap<String, String>) -> Result<String, may_postgres::Error>;
+pub type HandlerFn = fn(&PgConnection, may_minihttp::Request) -> Result<String, may_postgres::Error>;
+pub type HandlerFn2 = fn(&PgConnection, may_minihttp::Request, &HashMap<String, String>) -> Result<String, may_postgres::Error>;
 
+#[cfg(feature = "ws")]
 pub type WsOnConnectHandler = fn(&str, &mut TcpStream, &mut WsContext) -> io::Result<()>;
+
+#[cfg(feature = "ws")]
 pub type WsOnMessageHandler = fn(&str, &mut TcpStream, &mut WsContext, Option<&str>) -> io::Result<()>;
+
+#[cfg(feature = "ws")]
 pub type WsOnCloseHandler = fn(&str, &mut TcpStream, &mut WsContext, u16, &str) -> io::Result<()>;
 
+#[cfg(not(feature = "ws"))]
+lazy_static! {{
+    pub static ref ROUTES: HashMap<&'static str, HandlerFn> = {{
+        let mut map = HashMap::new();
+        {};
+        map
+    }};
+
+    pub static ref PARAMETERIZED_ROUTES: HashMap<&'static str, HandlerFn2> = {{
+        let mut map = HashMap::new();
+        {};
+        map
+    }};
+
+}}
+
+#[cfg(feature = "ws")]
 lazy_static! {{
     pub static ref ROUTES: HashMap<&'static str, HandlerFn> = {{
         let mut map = HashMap::new();
@@ -1663,6 +1915,16 @@ lazy_static! {{
             .map(|route| format!("map.insert{};", route))
             .collect::<Vec<_>>()
             .join("\n        "),
+        routes
+            .iter()
+            .map(|route| format!("map.insert{};", route))
+            .collect::<Vec<_>>()
+            .join("\n        "),
+         parameterized_routes
+            .iter()
+            .map(|route| format!("map.insert{};", route))
+            .collect::<Vec<_>>()
+            .join("\n        "),
         ws_onconnect_routes
             .iter()
             .map(|route| format!("map.insert{};", route))
@@ -1692,7 +1954,7 @@ fn models_to_sql(dir: &Path) {
             if path.is_dir() {
                 models_to_sql(&path);
             } else if path.file_name().unwrap() == "model.ts" {
-                let output_path = format!(".project_build/db/postgres/{}", path.strip_prefix("./routes").unwrap().with_extension("sql").to_str().unwrap().replace("/", "_"));
+                let output_path = format!(".project_build/db/postgres/{}", path.strip_prefix("./.project_build/routes").unwrap().with_extension("sql").to_str().unwrap().replace("/", "_"));
                 let _ = convert_ts_to_sql(path.to_str().unwrap(), &output_path);
             }
         }
@@ -1897,6 +2159,95 @@ r#"
     Ok(transformed_code)
 }
 
+
+
+fn render_slot(target_path: &str) -> String {
+    let root = "./.project_build/routes";
+    let slot_re = Regex::new(r"<slot\s*/>").unwrap();
+    let mut files = HashMap::new();
+
+    fn read_files(dir: &Path, files: &mut HashMap<String, String>, base: &Path) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().map_or(false, |ext| ext == "ubi") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        let relative_path = path.strip_prefix(base).unwrap().to_str().unwrap().to_string();
+                        files.insert(relative_path, content);
+                    }
+                } else if path.is_dir() {
+                    read_files(&path, files, base);
+                }
+            }
+        }
+    }
+
+    read_files(Path::new(root), &mut files, Path::new(root));
+
+    let ui_path = format!("{}ui.ubi", target_path.strip_prefix("./.project_build/routes/").unwrap());
+
+    let mut content = files.get(&ui_path).cloned().unwrap_or_default();
+    let mut current_path = Path::new(target_path);
+
+    while let Some(parent) = current_path.parent() {
+        let layout_path = parent.join("layout.ubi");
+        if let Some(layout_content) = files.get(&layout_path.to_str().unwrap().to_string()) {
+            content = slot_re.replace(layout_content, content.as_str()).to_string();
+        }
+
+        current_path = parent;
+    }
+
+    content
+}
+
+fn watch_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let config_file = fs::read_to_string("./config.json").unwrap();
+    let app_config: AppConfig = serde_json::from_str(&config_file).unwrap();
+
+    let (tx, rx) = channel();
+    let watcher_config = notify::Config::default().with_poll_interval(std::time::Duration::from_secs(1));
+    let mut watcher: RecommendedWatcher = RecommendedWatcher::new(tx, watcher_config)?;
+    let current_dir = fs::canonicalize(".")?;
+    watcher.watch(&current_dir, RecursiveMode::Recursive)?;
+
+    loop {
+        match rx.recv() {
+            Ok(event) => {
+                if event.unwrap().paths.iter().any(|path| path.starts_with(".project_build")) {
+                    continue;
+                }
+
+                let output = StdCommand::new("ubi")
+                    .arg("build")
+                    .output();
+
+                match output {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            eprintln!("Error saat menjalankan ubi build: {}", String::from_utf8_lossy(&output.stderr));
+                        }
+                    }
+                    Err(e) => eprintln!("Gagal menjalankan perintah: {}", e),
+                }
+
+                let output2 = StdCommand::new(format!("./build/{}", app_config.name))
+                    .output();
+
+                match output2 {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            eprintln!("Error saat menjalankan {}: {}", app_config.name, String::from_utf8_lossy(&output.stderr));
+                        }
+                    }
+                    Err(e) => eprintln!("Gagal menjalankan perintah: {}", e),
+                }
+            }
+            Err(e) => eprintln!("Error dalam menerima peristiwa: {}", e),
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let matches = Command::new("ubi")
         .version("1.0")
@@ -1914,6 +2265,7 @@ fn main() -> io::Result<()> {
         .subcommand(Command::new("build").about("Build Ubi project"))
         .subcommand(Command::new("migrate").about("Migrate PostgreSQL database"))
         .subcommand(Command::new("build-android").about("Build for Android"))
+        .subcommand(Command::new("dev").about("Auto rebuild and rerun when changes detected. This is for development"))
         .get_matches();
 
     let mut project_name = String::new();
@@ -1952,12 +2304,16 @@ fn main() -> io::Result<()> {
         Some("migrate") => {
             let db_dir = Path::new(".project_build/db/postgres");
             fs::create_dir_all(&db_dir)?;
-            models_to_sql(Path::new("./routes"));
+            models_to_sql(Path::new("./.project_build/routes"));
             tools::migration::run_sql();
             println!("Created all PostgreSQL tables successfully!");
         },
         Some("build") => {
             println!("Compiling project... (first time compile might be slow, please wait...)");
+
+            let config_file = fs::read_to_string("./config.json").unwrap();
+            let app_config: AppConfig = serde_json::from_str(&config_file).unwrap();
+
             let current_dir = env::current_dir().unwrap().join(".project_build");
             let project_build_dir = env::current_dir().unwrap().join(".project_build");
             let libs_build_dir = project_build_dir.clone().join("libs");
@@ -2013,12 +2369,23 @@ fn main() -> io::Result<()> {
 
             let _ = env::set_current_dir(&project_build_dir);
 
-            StdCommand::new("cargo")
-                .arg("build")
-                .arg("--release")
-                .current_dir(&project_build_dir)
-                .output()
-                .expect("Compiling failed");
+            if app_config.features.iter().any(|isi| isi == "ws") {
+                 StdCommand::new("cargo")
+                    .arg("build")
+                    .arg("--release")
+                    .arg("--features")
+                    .arg("ws")
+                    .current_dir(&project_build_dir)
+                    .output()
+                    .expect("Compiling failed");
+            } else {
+                 StdCommand::new("cargo")
+                    .arg("build")
+                    .arg("--release")
+                    .current_dir(&project_build_dir)
+                    .output()
+                    .expect("Compiling failed");
+            }
 
             StdCommand::new("cp")
                 .arg("-r")
@@ -2092,6 +2459,9 @@ let output_dir = PathBuf::from(".project_build/android");
                 .output()
                 .expect("Compiling Android failed");
 */
+        },
+        Some("dev") => {
+            watch_directory().unwrap();
         },
         _ => println!("invalid command!"),
     };
