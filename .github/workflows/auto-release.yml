@@ -37,13 +37,31 @@ jobs:
       - name: Rename binary
         run: |
           mkdir -p dist
-          cp target/release/ubi dist/ubi-linux-x86_64-64bit
+          cp target/release/ubi dist/ubi_x86_64_linux
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tagger.outputs.new_tag }}
           name: Release ${{ steps.tagger.outputs.new_tag }}
-          files: dist/ubi-linux-x86_64-64bit
+          files: dist/ubi_x86_64_linux
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clone Ubi_Doc repo
+        run: |
+          git clone https://x-access-token:${{ secrets.DOC_REPO_PAT }}@github.com/fuji-184/Ubi_Doc.git
+
+      - name: Copy binary to Ubi_Doc/static
+        run: |
+          mkdir -p Ubi_Doc/static
+          cp dist/ubi_x86_64_linux Ubi_Doc/static/
+
+      - name: Commit and push to Ubi_Doc
+        run: |
+          cd Ubi_Doc
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add static/ubi_x86_64_linux
+          git commit -m "Update binary to ${{ steps.tagger.outputs.new_tag }}" || echo "No changes to commit"
+          git push origin master
