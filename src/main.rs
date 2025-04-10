@@ -1188,13 +1188,12 @@ fn convert_html_to_kotlin(
         "</div>",
         "<row :[1]>",
         "class=\":[1]\"",
-        "<button :[1]>:[2]</button>",
+        "<button:[1]>:[2]</button>",
         "<p>:[1]</p>",
         "onclick=\":[1]()\"",
         "<a href=\":[1]\">:[2]</a>",
-        "justify-center",
-        "items-center"
-    ].into_iter().map(String::from).collect();
+
+          ].into_iter().map(String::from).collect();
 
     let output_templates: Vec<String> = vec![
         "Text(\"$:[1]\")",
@@ -1217,8 +1216,8 @@ fn convert_html_to_kotlin(
 
 
             }) {:[2]}",
-        "horizontalArrangement = Arrangement.Center,",
-        "verticalAlignment = Alignment.CenterVertically,"
+
+
     ].into_iter().map(String::from).collect();
 
 
@@ -1344,26 +1343,78 @@ fn handle_display_flex(input: &str) -> String {
         let class_attr = &caps[3];
 
         // Hapus class "flex" (tidak case-sensitive)
-        let filtered_classes: Vec<&str> = class_attr
+        let mut filtered_classes: Vec<&str> = class_attr
             .split_whitespace()
-            .filter(|c| !c.eq_ignore_ascii_case("flex"))
+            .filter(|c| !c.eq_ignore_ascii_case("flex")
+                && !c.eq_ignore_ascii_case("flex-col")
+                && !c.eq_ignore_ascii_case("flex-row")
+                && !c.eq_ignore_ascii_case("justify-center")
+                && !c.eq_ignore_ascii_case("items-center")
+            )
             .collect();
 
-        let new_class_attr = filtered_classes.join(" ");
+        let contains_justify_center = class_attr
+            .split_whitespace()
+            .any(|c| c.eq_ignore_ascii_case("justify-center"));
+
+        let contains_items_center = class_attr
+            .split_whitespace()
+            .any(|c| c.eq_ignore_ascii_case("items-center"));
+
         let contains_flex = class_attr
             .split_whitespace()
             .any(|c| c.eq_ignore_ascii_case("flex"));
 
-        let new_tag = if contains_flex { "row" } else { tag };
+        let contains_flex_col = class_attr
+            .split_whitespace()
+            .any(|c| c.eq_ignore_ascii_case("flex-col"));
 
-        if new_class_attr.is_empty() {
+        let contains_flex_row = class_attr
+            .split_whitespace()
+            .any(|c| c.eq_ignore_ascii_case("flex-row"));
+
+        let new_tag = if contains_flex && contains_flex_row { "Row" }
+            else if contains_flex && contains_flex_col { "Column" }
+            else if contains_flex { "Row" }
+            else { tag };
+
+        if contains_flex_row && contains_justify_center {
+            filtered_classes.push("horizontalArrangement=Arrangement.Center,");
+        }
+
+        if contains_flex_row && contains_items_center {
+            filtered_classes.push("verticalAlignment=Alignment.CenterVertically,");
+        }
+
+        if contains_flex_col && contains_justify_center {
+            filtered_classes.push("verticalArrangement=Arrangement.Center,");
+        }
+
+        if contains_flex_col && contains_items_center {
+            filtered_classes.push("horizontalAlignment=Alignment.CenterHorizontally,");
+        }
+/*
+        if contains_flex && !contains_flex_row && !contains_flex_col && contains_justify_center {
+            filtered_classes.push("horizontalArrangement=Arrangement.Center,");
+        }
+
+        if contains_flex && !contains_flex_row && !contains_flex_col && contains_items_center {
+            filtered_classes.push("verticalAlignment=Alignment.CenterVertically,");
+        }
+*/
+        let new_class_attr = filtered_classes.join(" ");
+
+        if new_class_attr.is_empty() && contains_flex {
+            format!("{new_tag}({other_attrs})")
+        } else if new_class_attr.is_empty() {
             format!("<{new_tag}{other_attrs}")
-        } else {
-            format!("<{new_tag}{other_attrs} class=\"{new_class_attr}\"")
+        }
+        else {
+            format!("{new_tag} {other_attrs} class=\"{new_class_attr}\"")
         }
     });
 
-    output.to_string()
+    output.replace(")>", "){")
 }
 
 fn convert_general(
@@ -2248,70 +2299,8 @@ fn watch_directory() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn main() -> io::Result<()> {
-    let matches = Command::new("ubi")
-        .version("1.0")
-        .author("Fuji <fujisantoso134@gmail.com>")
-        .about("Create JavaScript backend easily")
-        .subcommand(
-            Command::new("init").about("Initialize Ubi project").arg(
-                Arg::new("project_name")
-                    .value_name("PROJECT_NAME")
-                    .required(true)
-                    .help("The name of the project"),
-            ),
-        )
-        .subcommand(Command::new("setup").about("Configure Ubi environment"))
-        .subcommand(Command::new("build").about("Build Ubi project"))
-        .subcommand(Command::new("migrate").about("Migrate PostgreSQL database"))
-        .subcommand(Command::new("build-android").about("Build for Android"))
-        .subcommand(Command::new("dev").about("Auto rebuild and rerun when changes detected. This is for development"))
-        .get_matches();
-
-    let mut project_name = String::new();
-
-    match matches.subcommand_name() {
-        Some("setup") => {
-            let (distro_name, distro_id) = detect_linux_distribution().unwrap();
-
-    println!("Detected device: {} ({})", distro_name, distro_id);
-
-    let home_dir = env::var("HOME").unwrap();
-    let ubi_dir = format!("{}/.ubi", home_dir);
-    let lib_dir = format!("{}/.ubi/lib", home_dir);
-
-    fs::create_dir_all(&lib_dir)?;
-
-        if copy_libraries(&lib_dir).unwrap() {
-            setup_libraries(&lib_dir, &distro_id).unwrap();
-            add_to_shell_config(&ubi_dir).unwrap();
-            println!("Yuhuu Ubi environment has been setup successfully!");
-        }
-        },
-        Some("init") => {
-            if let Some(init_matches) = matches.subcommand_matches("init") {
-                project_name = init_matches
-                    .get_one::<String>("project_name")
-                    .unwrap()
-                    .to_string();
-                let _ = init_ubi(&project_name);
-                println!(
-                    "Project {} has been initialized, let's go coding ^^",
-                    project_name
-                );
-            }
-        },
-        Some("migrate") => {
-            let db_dir = Path::new(".project_build/db/postgres");
-            fs::create_dir_all(&db_dir)?;
-            models_to_sql(Path::new("./.project_build/routes"));
-            tools::migration::run_sql();
-            println!("Created all PostgreSQL tables successfully!");
-        },
-        Some("build") => {
-            println!("Compiling project... (first time compile might be slow, please wait...)");
-
-            let config_file = fs::read_to_string("./config.json").unwrap();
+fn build_overal(mode: &str) -> String {
+     let config_file = fs::read_to_string("./config.json").unwrap();
             let app_config: AppConfig = serde_json::from_str(&config_file).unwrap();
 
             let current_dir = env::current_dir().unwrap().join(".project_build");
@@ -2370,7 +2359,16 @@ fn main() -> io::Result<()> {
             let _ = env::set_current_dir(&project_build_dir);
 
             if app_config.features.iter().any(|isi| isi == "ws") {
+                if mode == "dev" {
                  StdCommand::new("cargo")
+                    .arg("build")
+                    .arg("--features")
+                    .arg("ws")
+                    .current_dir(&project_build_dir)
+                    .output()
+                    .expect("Compiling failed");
+                } else {
+                     StdCommand::new("cargo")
                     .arg("build")
                     .arg("--release")
                     .arg("--features")
@@ -2378,13 +2376,22 @@ fn main() -> io::Result<()> {
                     .current_dir(&project_build_dir)
                     .output()
                     .expect("Compiling failed");
+                }
             } else {
+                if mode == "dev" {
                  StdCommand::new("cargo")
+                    .arg("build")
+                    .current_dir(&project_build_dir)
+                    .output()
+                    .expect("Compiling failed");
+                } else {
+                     StdCommand::new("cargo")
                     .arg("build")
                     .arg("--release")
                     .current_dir(&project_build_dir)
                     .output()
                     .expect("Compiling failed");
+                }
             }
 
             StdCommand::new("cp")
@@ -2394,10 +2401,91 @@ fn main() -> io::Result<()> {
                 .current_dir(env::current_dir().unwrap())
                 .output()
                 .expect("Compiling failed");
+            name
+}
+
+fn main() -> io::Result<()> {
+    let matches = Command::new("ubi")
+        .version("1.0")
+        .author("Fuji <fujisantoso134@gmail.com>")
+        .about("Create JavaScript backend easily")
+        .subcommand(
+            Command::new("init").about("Initialize Ubi project").arg(
+                Arg::new("project_name")
+                    .value_name("PROJECT_NAME")
+                    .required(true)
+                    .help("The name of the project"),
+            ),
+        )
+        .subcommand(Command::new("setup").about("Configure Ubi environment"))
+        .subcommand(Command::new("build-dev").about("Build Ubi project in development mode"))
+        .subcommand(Command::new("build-release").about("Build Ubi project in release mode"))
+        .subcommand(Command::new("migrate").about("Migrate PostgreSQL database"))
+        .subcommand(Command::new("build-android").about("Build for Android"))
+        .subcommand(Command::new("dev").about("Auto rebuild and rerun when changes detected. This is for development"))
+        .get_matches();
+
+    let mut project_name = String::new();
+
+    match matches.subcommand_name() {
+        Some("setup") => {
+            let (distro_name, distro_id) = detect_linux_distribution().unwrap();
+
+    println!("Detected device: {} ({})", distro_name, distro_id);
+
+    let home_dir = env::var("HOME").unwrap();
+    let ubi_dir = format!("{}/.ubi", home_dir);
+    let lib_dir = format!("{}/.ubi/lib", home_dir);
+
+    fs::create_dir_all(&lib_dir)?;
+
+        if copy_libraries(&lib_dir).unwrap() {
+            setup_libraries(&lib_dir, &distro_id).unwrap();
+            add_to_shell_config(&ubi_dir).unwrap();
+            println!("Yuhuu Ubi environment has been setup successfully!");
+        }
+        },
+        Some("init") => {
+            if let Some(init_matches) = matches.subcommand_matches("init") {
+                project_name = init_matches
+                    .get_one::<String>("project_name")
+                    .unwrap()
+                    .to_string();
+                let _ = init_ubi(&project_name);
+                println!(
+                    "Project {} has been initialized, let's go coding ^^",
+                    project_name
+                );
+            }
+        },
+        Some("migrate") => {
+            let db_dir = Path::new(".project_build/db/postgres");
+            fs::create_dir_all(&db_dir)?;
+            models_to_sql(Path::new("./.project_build/routes"));
+            tools::migration::run_sql();
+            println!("Created all PostgreSQL tables successfully!");
+        },
+        Some("build-release") => {
+            println!("Compiling project... (first time compile might be slow, please wait...)");
+
+            let name = build_overal("release");
 
             StdCommand::new("mv")
                 .arg(format!("./target/release/{}", name))
-                .arg("../build")
+                .arg(&format!("../build/{}_release", name))
+                .current_dir(env::current_dir().unwrap())
+                .output()
+                .expect("Compiling failed");
+            println!("Yeayy, The project has been built in the build folder");
+        },
+        Some("build-dev") => {
+            println!("Compiling project... (first time compile might be slow, please wait...)");
+
+            let name = build_overal("dev");
+
+            StdCommand::new("mv")
+                .arg(format!("./target/debug/{}", name))
+                .arg(&format!("../build/{}_dev", name))
                 .current_dir(env::current_dir().unwrap())
                 .output()
                 .expect("Compiling failed");

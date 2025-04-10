@@ -15,11 +15,13 @@ fun MainScreen() {
     val navController = rememberNavController()
 
     Scaffold(
+/*
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text("UBI App") }
             )
         },
+*/
         bottomBar = {
             AppBottomNavigation(navController)
         }
