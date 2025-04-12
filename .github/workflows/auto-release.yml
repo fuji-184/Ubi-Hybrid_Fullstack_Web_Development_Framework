@@ -50,9 +50,9 @@ jobs:
 
       - name: Install rclone
         run: |
-        curl https://rclone.org/install.sh | sudo bash
-        mkdir -p ~/.config/rclone
-        echo "${{ secrets.RCLONE_CONFIG }}" > ~/.config/rclone/rclone.conf
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONFIG }}" > ~/.config/rclone/rclone.conf
 
       - name: Upload binary to Google Drive
         run: |
