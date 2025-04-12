@@ -1,28 +1,22 @@
 name: Auto Tag and Release
-
 on:
   push:
     branches:
       - master
-
 permissions:
   contents: write
-
 jobs:
   tag-and-release:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-
       - name: Set up Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
       - name: Create new tag (auto-versioning)
         id: tagger
         uses: mathieudutour/github-tag-action@v6.1
@@ -30,15 +24,12 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           tag_prefix: "v"
           default_bump: patch
-
       - name: Build binary
         run: cargo build --release
-
       - name: Rename binary
         run: |
           mkdir -p dist
           cp target/release/ubi dist/ubi_x86_64_linux
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
@@ -47,13 +38,13 @@ jobs:
           files: dist/ubi_x86_64_linux
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Install rclone
         run: |
           curl https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
           echo "${{ secrets.RCLONE_CONFIG }}" > ~/.config/rclone/rclone.conf
-
-      - name: Upload binary to Google Drive
+          rclone config show
+      - name: Upload binary to Google Drive (Specific Folder)
         run: |
-          rclone copy dist/ubi_x86_64_linux fuji:/ --progress 
+          echo "Uploading to Google Drive..."
+          rclone copy dist/ubi_x86_64_linux fuji:"My Drive" --progress --verbose
