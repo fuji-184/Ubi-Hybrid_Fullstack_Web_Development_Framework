@@ -239,7 +239,7 @@ fn handle_if(input: &str, js_input: &str) -> (String, String) {
         if let Some(cond) = cap.get(1) {
             let condition = cond.as_str().trim().to_string();
             stack.push((condition, start, String::new()));
-        } else if let Some((condition, pos, text)) = stack.pop() {
+        } else if let Some((condition, _, text)) = stack.pop() {
             let content = text.trim().to_string();
             let id = format!("a{}", Uuid::new_v4().to_string().replace("-", "_"));
             let converted = format!(
@@ -355,7 +355,7 @@ fn handle_for(input: &str, js_input: &str) -> (String, String) {
         if let Some(cond) = cap.get(1) {
             let condition = cond.as_str().trim().to_string();
             stack.push((condition, start, String::new()));
-        } else if let Some((condition, pos, text)) = stack.pop() {
+        } else if let Some((condition, _, text)) = stack.pop() {
             let mut content = text.trim().to_string();
             content = convert_general(&content, "{:[1]}", "${:[1]}", ".html").unwrap();
             isi_for.push(content.clone());
@@ -1539,8 +1539,8 @@ fn extract_styles(html: &str) -> (String, String) {
     (combined_styles, clean_html)
 }
 
-fn convert_ubi(input: &str, input_path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
-    let (style, mut html) = extract_styles(input);
+fn convert_ubi(input: &str, _input_path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+    let (style, html) = extract_styles(input);
     let (mut html, raw_js) = split_html_js(&html);
 
     let tmp_ts_file_path = "./.project_build/tmp.ts";
