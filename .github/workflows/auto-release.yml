@@ -52,6 +52,21 @@ jobs:
         run: |
           git clone https://x-access-token:${{ secrets.DOC_REPO_PAT }}@github.com/fuji-184/Ubi_Doc.git
 
+      - name: Install Git LFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - name: Track binary with Git LFS
+        run: |
+          cd Ubi_Doc
+          git lfs track "static/ubi_x86_64_linux"
+          git add .gitattributes
+          git commit -m "Track large binary with Git LFS" || echo "LFS tracking already set"
+          git push origin master
+
+
       - name: Copy binary to Ubi_Doc/static
         run: |
           mkdir -p Ubi_Doc/static
