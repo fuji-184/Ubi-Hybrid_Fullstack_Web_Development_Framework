@@ -97,6 +97,10 @@ fn build_ubi() -> io::Result<()> {
 
     handle_files(client_dir)?;
 
+    if !Path::new("./.project_build/src/middleware").exists() {
+        fs::create_dir_all("./.project_build/src/middleware").unwrap();
+    }
+
     generate_mod_rs_middleware("./.project_build/src/middleware");
 
     Ok(())
@@ -1501,6 +1505,24 @@ fn get_variables(js_code: &str) -> Vec<String> {
         .collect()
 }
 
+fn get_all_variables(js_code: &str) -> Vec<String> {
+    let decl_re = Regex::new(r"\b(?:let|const|var)\s+([a-zA-Z_]\w*)").unwrap();
+    let assign_re = Regex::new(r"(?:^|[^.\w])([a-zA-Z_]\w*)\s*=\s*[^=]").unwrap();
+
+    let mut vars = std::collections::HashSet::new();
+
+    for cap in decl_re.captures_iter(js_code) {
+        vars.insert(cap[1].to_string());
+    }
+
+    for cap in assign_re.captures_iter(js_code) {
+        vars.insert(cap[1].to_string());
+    }
+
+    vars.into_iter().collect()
+}
+
+
 fn process_variables(
     input: &str,
     matcher: &str,
@@ -1539,6 +1561,14 @@ fn extract_styles(html: &str) -> (String, String) {
     (combined_styles, clean_html)
 }
 
+fn extract_html_variables(html: &str) -> Vec<String> {
+    let html_var_re = Regex::new(r"\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}").unwrap();
+
+    html_var_re.captures_iter(html)
+        .map(|cap| cap[1].to_string())
+        .collect()
+}
+
 fn convert_ubi(input: &str, _input_path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
     let (style, html) = extract_styles(input);
     let (mut html, raw_js) = split_html_js(&html);
@@ -1559,18 +1589,19 @@ fn convert_ubi(input: &str, _input_path: &PathBuf) -> Result<String, Box<dyn std
     let mut js_for = String::new();
     (html, js_for) = handle_for(&html, &js);
 
-    let vars = get_variables(&html);
+    let vars = get_all_variables(&js);
+    let html_vars = extract_html_variables(&html);
 
     let mut html_hasil = process_variables(&html, "{:[1]}", "<p class=':[1]'></p>")?;
     let mut js_new = String::new();
 
     for var in vars.iter() {
-        if js.contains(format!("{} = new Signal", var).as_str()) {
+        if js.contains(format!("{} = new Signal", var).as_str()) && html_vars.contains(var) {
             let teks = format!("effect(() => document.querySelectorAll('.{}').forEach(el => el.textContent = {}.get()));", var, var);
             if !js_new.contains(&teks) {
                 js_new += &teks;
             }
-        } else {
+        } else if html_vars.contains(var) {
             let teks = format!(
                 "document.querySelectorAll('.{}').forEach(el => el.textContent = {});",
                 var, var
@@ -2642,7 +2673,7 @@ fn copy_libraries(lib_dir: &str) -> Result<bool, Box<dyn std::error::Error>> {
             .output()?;
 
     } else if arch == "arm64" {
-        
+
         let cb_path = Path::new(lib_dir).join("cb");
         let pn_path = Path::new(lib_dir).join("pn");
         let dp_path = Path::new(lib_dir).join("dp");
