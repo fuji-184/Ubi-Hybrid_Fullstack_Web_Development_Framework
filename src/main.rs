@@ -38,9 +38,12 @@ const ROUTES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/routes");
 const INDEX_HTML: &str = include_str!("../libs/index.html");
 const DOC_HTML: &str = include_str!("../libs/doc.html");
 const DPRINT_CONFIG: &str = include_str!("../dprint.json");
-const CB: &[u8] = include_bytes!("../libs/cb");
-const PN: &[u8] = include_bytes!("../libs/pn");
-const DP: &[u8] = include_bytes!("../libs/dp");
+const CB_x86_64: &[u8] = include_bytes!("../libs/x86_64/cb");
+const PN_x86_64: &[u8] = include_bytes!("../libs/x86_64/pn");
+const DP_x86_64: &[u8] = include_bytes!("../libs/x86_64/dp");
+const CB_aarch_64: &[u8] = include_bytes!("../libs/aarch_64/cb");
+const PN_aarch_64: &[u8] = include_bytes!("../libs/aarch_64/pn");
+const DP_aarch_64: &[u8] = include_bytes!("../libs/aarch_64/dp");
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PostgresConfig {
@@ -2619,11 +2622,11 @@ fn copy_libraries(lib_dir: &str) -> Result<bool, Box<dyn std::error::Error>> {
         let pn_path = Path::new(lib_dir).join("pn");
         let dp_path = Path::new(lib_dir).join("dp");
         let mut cb = fs::File::create(&cb_path).expect("Setup failed");
-        cb.write_all(CB).expect("Setup failed");
+        cb.write_all(CB_x86_64).expect("Setup failed");
         let mut pn = fs::File::create(&pn_path).expect("Setup failed");
-        pn.write_all(PN).expect("Setup failed");
+        pn.write_all(PN_x86_64).expect("Setup failed");
         let mut dp = fs::File::create(&dp_path).expect("Setup failed");
-        dp.write_all(DP).expect("Setup failed");
+        dp.write_all(DP_x86_64).expect("Setup failed");
 
         StdCommand::new("chmod")
             .arg("+x")
@@ -2638,6 +2641,30 @@ fn copy_libraries(lib_dir: &str) -> Result<bool, Box<dyn std::error::Error>> {
             .arg(&dp_path)
             .output()?;
 
+    } else if arch == "arm64" {
+        
+        let cb_path = Path::new(lib_dir).join("cb");
+        let pn_path = Path::new(lib_dir).join("pn");
+        let dp_path = Path::new(lib_dir).join("dp");
+        let mut cb = fs::File::create(&cb_path).expect("Setup failed");
+        cb.write_all(CB_aarch_64).expect("Setup failed");
+        let mut pn = fs::File::create(&pn_path).expect("Setup failed");
+        pn.write_all(PN_aarch_64).expect("Setup failed");
+        let mut dp = fs::File::create(&dp_path).expect("Setup failed");
+        dp.write_all(DP_aarch_64).expect("Setup failed");
+
+        StdCommand::new("chmod")
+            .arg("+x")
+            .arg(&cb_path)
+            .output()?;
+        StdCommand::new("chmod")
+            .arg("+x")
+            .arg(&pn_path)
+            .output()?;
+        StdCommand::new("chmod")
+            .arg("+x")
+            .arg(&dp_path)
+            .output()?;
     } else {
         println!("Sorry your architecture {} currently isn't supported by Ubi. The supported architecture is x86_64", arch);
         return Ok(false);
