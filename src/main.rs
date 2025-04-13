@@ -654,10 +654,28 @@ fn convert_ts_to_rust(
         ].into_iter().map(String::from));
 
         output_templates.extend(vec![
-                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                   r#"pub fn get(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+                    if let Some(db) = db {
+                :[1] return Ok(:[2]); }
+
+                } else {
+         return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }"#,
+                    r#"pub fn post(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+if let Some(db) = db {
+                :[1] return Ok(:[2]); } else {
+ return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }}"#,
+                    r#"pub fn update(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+if let Some(db) = db {
+                :[1] return Ok(:[2]); } else {
+ return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }}"#,
+                    r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+if let Some(db) = db {
+                :[1] return Ok(:[2]); } else {
+ return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }}"#,
         ].into_iter().map(String::from));
     } else {
         input_templates.extend(vec![
@@ -669,10 +687,26 @@ fn convert_ts_to_rust(
         ].into_iter().map(String::from));
 
         output_templates.extend(vec![
-                   "pub fn get(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn post(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn update(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
-                    "pub fn delete(db: &crate::PgConnection, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {\n:[1]\n return Ok(:[2]); }",
+                   r#"pub fn get(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+if let Some(db) = db {
+                :[1] return Ok(:[2]); } else {
+ return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }}"#,
+                    r#"pub fn post(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+if let Some(db) = db {
+                :[1] return Ok(:[2]); } else {
+ return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }}"#,
+                    r#"pub fn update(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+if let Some(db) = db {
+                :[1] return Ok(:[2]); } else {
+ return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }}"#,
+                    r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+if let Some(db) = db {
+                :[1] return Ok(:[2]); } else {
+ return Ok(serde_json::json!("error failed to get database connection").to_string());
+                }}"#,
         ].into_iter().map(String::from));
     }
 
@@ -1919,17 +1953,18 @@ fn generate_mod_rs(server_dir: &str) {
         r#"
 use std::collections::HashMap;
 use lazy_static::lazy_static;
-use crate::PgConnection;
 use may::net::TcpStream;
 use std::io;
+
+use crate::PgConnection;
 
 #[cfg(feature = "ws")]
 use may_minihttp::WsContext;
 
 {}
 
-pub type HandlerFn = fn(&PgConnection, may_minihttp::Request) -> Result<String, may_postgres::Error>;
-pub type HandlerFn2 = fn(&PgConnection, may_minihttp::Request, &HashMap<String, String>) -> Result<String, may_postgres::Error>;
+pub type HandlerFn = fn(Option<&PgConnection>, may_minihttp::Request) -> Result<String, may_postgres::Error>;
+pub type HandlerFn2 = fn(Option<&PgConnection>, may_minihttp::Request, &HashMap<String, String>) -> Result<String, may_postgres::Error>;
 
 #[cfg(feature = "ws")]
 pub type WsOnConnectHandler = fn(&str, &mut TcpStream, &mut WsContext) -> io::Result<()>;
@@ -2030,6 +2065,7 @@ lazy_static! {{
 
     mod_rs_file.write_all(&generated_code.into_bytes()).unwrap();
 }
+
 
 fn models_to_sql(dir: &Path) {
     if let Ok(entries) = fs::read_dir(dir) {
@@ -2392,41 +2428,27 @@ fn build_overal(mode: &str) -> String {
 
             let _ = env::set_current_dir(&project_build_dir);
 
-            if app_config.features.iter().any(|isi| isi == "ws") {
-                if mode == "dev" {
-                 StdCommand::new("cargo")
-                    .arg("build")
-                    .arg("--features")
-                    .arg("ws")
-                    .current_dir(&project_build_dir)
-                    .output()
-                    .expect("Compiling failed");
-                } else {
-                     StdCommand::new("cargo")
-                    .arg("build")
-                    .arg("--release")
-                    .arg("--features")
-                    .arg("ws")
-                    .current_dir(&project_build_dir)
-                    .output()
-                    .expect("Compiling failed");
+            let mut args = vec!["build"];
+
+            if app_config.features.len() > 0 && app_config.features[0] != "" {
+                args.push("--features");
+                if app_config.features.contains(&"ws".to_string()) {
+                    args.push("ws");
                 }
-            } else {
-                if mode == "dev" {
-                 StdCommand::new("cargo")
-                    .arg("build")
-                    .current_dir(&project_build_dir)
-                    .output()
-                    .expect("Compiling failed");
-                } else {
-                     StdCommand::new("cargo")
-                    .arg("build")
-                    .arg("--release")
-                    .current_dir(&project_build_dir)
-                    .output()
-                    .expect("Compiling failed");
+                if app_config.features.contains(&"postgres".to_string()) {
+                    args.push("postgres");
                 }
             }
+
+            if mode == "release" {
+                args.push("--release");
+            }
+
+            StdCommand::new("cargo")
+                    .args(args)
+                    .current_dir(&project_build_dir)
+                    .output()
+                    .expect("Compiling failed");
 
             StdCommand::new("cp")
                 .arg("-r")

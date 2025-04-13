@@ -98,6 +98,7 @@ struct AppConfig {
 }
 
 struct Context {
+    #[cfg(feature = "postgres")]
     db: PgConnection,
 }
 
@@ -105,6 +106,7 @@ pub struct PgConnection {
     client: Client,
 }
 
+#[cfg(feature = "postgres")]
 impl PgConnection {
     fn new(db_url: &str) -> Self {
         let client = may_postgres::connect(&db_url).unwrap();
@@ -153,10 +155,12 @@ impl PgConnection {
     }
 }
 
+#[cfg(feature = "postgres")]
 struct PgPool {
     clients: Vec<PgConnection>,
 }
 
+#[cfg(feature = "postgres")]
 impl PgPool {
     fn new(db_url: &'static str, size: usize) -> PgPool {
         let clients = (0..size)
@@ -241,16 +245,30 @@ impl HttpService for Context {
                     "GET" => {
                         isi = match server::ROUTES.get(format_compact!("{}/get", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                                 Some(handler) => {
-                                                match handler(&self.db, req) {
+ #[cfg(not(feature = "postgres"))]
+                                match handler(None, req) {
+                                                        Ok(response) =>response,
+                                                        Err(e) => format!("Error: {}", e),
+                                                    }
+
+
+                                #[cfg(feature = "postgres")]
+                                match handler(Some(&self.db), req) {
                                                         Ok(response) =>response,
                                                         Err(e) => format!("Error: {}", e),
                                                     }
                                             }
                                                 None => {
                                                     let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
+ #[cfg(not(feature = "postgres"))]
+ match match_url(&url) {
+                                                        Some((handler, params)) => handler(None, req, &params).unwrap(),
+                                                        None =>  format!("404 Not Found"),
+                                                    }
 
+                                                     #[cfg(feature = "postgres")]
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(Some(&self.db), req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
                                                 }
@@ -260,16 +278,30 @@ impl HttpService for Context {
                     "POST" => {
                         isi = match server::ROUTES.get(format_compact!("{}/post", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                         Some(handler) => {
-                                                match handler(&self.db, req) {
+let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
+ #[cfg(not(feature = "postgres"))]
+ match match_url(&url) {
+                                                        Some((handler, params)) => handler(None, req, &params).unwrap(),
+                                                        None =>  format!("404 Not Found"),
+                                                    }
+
+                                 #[cfg(feature = "postgres")]
+                                match handler(Some(&self.db), req) {
                                                 Ok(response) => response,
                                                 Err(e) => format!("Error: {}", e),
                                             }
                                             }
                                         None => {
                                             let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
+ #[cfg(not(feature = "postgres"))]
+ match match_url(&url) {
+                                                        Some((handler, params)) => handler(None, req, &params).unwrap(),
+                                                        None =>  format!("404 Not Found"),
+                                                    }
 
+                                                    #[cfg(feature = "postgres")]
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(Some(&self.db), req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -280,16 +312,30 @@ impl HttpService for Context {
                     "UPDATE" => {
                         isi = match server::ROUTES.get(format_compact!("{}/update", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                                 Some(handler) => {
-                                                match handler(&self.db, req) {
+ #[cfg(not(feature = "postgres"))]
+ match handler(None, req) {
+                                                        Ok(response) =>response,
+                                                        Err(e) => format!("Error: {}", e),
+                                                    }
+
+
+                                                 #[cfg(feature = "postgres")]
+                                                match handler(Some(&self.db), req) {
                                                         Ok(response) =>response,
                                                         Err(e) => format!("Error: {}", e),
                                                     }
                                             }
                                                 None => {
                                                     let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
+ #[cfg(not(feature = "postgres"))]
+ match match_url(&url) {
+                                                        Some((handler, params)) => handler(None, req, &params).unwrap(),
+                                                        None =>  format!("404 Not Found"),
+                                                    }
 
+                                                    #[cfg(feature = "postgres")]
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(Some(&self.db), req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -300,16 +346,29 @@ impl HttpService for Context {
                     "DELETE" => {
                         isi = match server::ROUTES.get(format_compact!("{}/delete", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                         Some(handler) => {
-                                match handler(&self.db, req) {
+ #[cfg(not(feature = "postgres"))]
+  match handler(None, req) {
+                                        Ok(response) =>response,
+                                        Err(e) => format!("Error: {}", e),
+                                    }
+
+                                #[cfg(feature = "postgres")]
+                                match handler(Some(&self.db), req) {
                                         Ok(response) =>response,
                                         Err(e) => format!("Error: {}", e),
                                     }
                             }
                             None => {
                                 let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
+ #[cfg(not(feature = "postgres"))]
+ match match_url(&url) {
+                                                        Some((handler, params)) => handler(None, req, &params).unwrap(),
+                                                        None =>  format!("404 Not Found"),
+                                                    }
 
+                                #[cfg(feature = "postgres")]
                                                     match match_url(&url) {
-                                                        Some((handler, params)) => handler(&self.db, req, &params).unwrap(),
+                                                        Some((handler, params)) => handler(Some(&self.db), req, &params).unwrap(),
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -462,6 +521,7 @@ if etag_header.value == etag.as_bytes() {
 }
 
 struct Server {
+    #[cfg(feature = "postgres")]
     db_pool: PgPool,
 }
 
@@ -473,6 +533,7 @@ impl HttpServiceFactory for Server {
 
     fn new_service(&self, id: usize) -> Self::Service {
         Context {
+ #[cfg(feature = "postgres")]
                db: self.db_pool.get_connection(id),
         }
     }
@@ -531,6 +592,8 @@ fn main() -> io::Result<()> {
     may::config().set_pool_capacity(1000).set_stack_size(0x1000);
 
     let app_config: AppConfig = serde_json::from_str(CONFIG).unwrap();
+
+ #[cfg(feature = "postgres")]
     let db_url = format!(
         "postgresql://{}:{}@{}:{}/{}",
         app_config.postgres.username,
@@ -540,6 +603,7 @@ fn main() -> io::Result<()> {
         app_config.postgres.name
     );
     let server = Server {
+ #[cfg(feature = "postgres")]
         db_pool: PgPool::new(db_url.leak(), num_cpus::get()),
     };
 

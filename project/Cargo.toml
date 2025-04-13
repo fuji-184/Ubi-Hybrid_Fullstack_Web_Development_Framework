@@ -33,3 +33,4 @@ overflow-checks = false
 
 [features]
 ws = []
+postgres = []
