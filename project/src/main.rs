@@ -278,12 +278,11 @@ impl HttpService for Context {
                     "POST" => {
                         isi = match server::ROUTES.get(format_compact!("{}/post", path.strip_suffix("/").unwrap_or(path)).as_str()) {
                                         Some(handler) => {
-let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
+//let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
  #[cfg(not(feature = "postgres"))]
- match match_url(&url) {
-                                                        Some((handler, params)) => handler(None, req, &params).unwrap(),
-                                                        None =>  format!("404 Not Found"),
-                                                    }
+{handler(None, req).unwrap()}
+
+
 
                                  #[cfg(feature = "postgres")]
                                 match handler(Some(&self.db), req) {

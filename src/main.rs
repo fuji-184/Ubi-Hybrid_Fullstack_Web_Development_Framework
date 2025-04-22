@@ -644,6 +644,12 @@ fn convert_ts_to_rust(
     let mut input_templates: Vec<String> = vec![];
     let mut output_templates: Vec<String> = vec![];
 
+    let app_config: Option<AppConfig> = Path::new("./config.json")
+    .exists()
+    .then(|| fs::read_to_string("./config.json").ok())
+    .flatten()
+    .and_then(|config_str| serde_json::from_str(&config_str).ok());
+
     if out_filename.contains("_:") {
         input_templates.extend(vec![
         // get function
@@ -653,30 +659,30 @@ fn convert_ts_to_rust(
         "function delete(): string {:[1] return :[2]; }",
         ].into_iter().map(String::from));
 
+        if app_config.unwrap().features.contains(&"postgres".to_string()) {
         output_templates.extend(vec![
                    r#"pub fn get(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
-                    if let Some(db) = db {
-                :[1] return Ok(:[2]); }
-
-                } else {
-         return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }"#,
+                :[1] return Ok(:[2]);}"#,
                     r#"pub fn post(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
-if let Some(db) = db {
-                :[1] return Ok(:[2]); } else {
- return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }}"#,
+                :[1] return Ok(:[2]);}"#,
                     r#"pub fn update(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
-if let Some(db) = db {
-                :[1] return Ok(:[2]); } else {
- return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }}"#,
-                    r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
-if let Some(db) = db {
-                :[1] return Ok(:[2]); } else {
- return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }}"#,
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
         ].into_iter().map(String::from));
+        } else {
+            output_templates.extend(vec![
+                   r#"pub fn get(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
+                    r#"pub fn post(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
+                    r#"pub fn update(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request, req_params: &std::collections::HashMap<String, String>) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
+        ].into_iter().map(String::from));
+
+        }
     } else {
         input_templates.extend(vec![
         // get function
@@ -686,28 +692,35 @@ if let Some(db) = db {
         "function delete(): string {:[1] return :[2]; }",
         ].into_iter().map(String::from));
 
+        if app_config.unwrap().features.contains(&"postgres".to_string()) {
         output_templates.extend(vec![
                    r#"pub fn get(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
-if let Some(db) = db {
-                :[1] return Ok(:[2]); } else {
- return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }}"#,
-                    r#"pub fn post(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
-if let Some(db) = db {
-                :[1] return Ok(:[2]); } else {
- return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }}"#,
-                    r#"pub fn update(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
-if let Some(db) = db {
-                :[1] return Ok(:[2]); } else {
- return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }}"#,
-                    r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
-if let Some(db) = db {
-                :[1] return Ok(:[2]); } else {
- return Ok(serde_json::json!("error failed to get database connection").to_string());
-                }}"#,
+  let db = db.unwrap();
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn post(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+  let db = db.unwrap();
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn update(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+                let db = db.unwrap();
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+  let db = db.unwrap();
+                :[1] return Ok(:[2]);}"#,
+        ].into_iter().map(String::from))
+        } else {
+
+        output_templates.extend(vec![
+                   r#"pub fn get(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn post(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn update(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
+            r#"pub fn delete(db: Option<&crate::PgConnection>, req: may_minihttp::Request) -> Result<String, may_postgres::Error> {
+                :[1] return Ok(:[2]);}"#,
         ].into_iter().map(String::from));
+
+        };
     }
 
     let input_templates2 = vec![
@@ -1899,24 +1912,25 @@ fn generate_mod_rs(server_dir: &str) {
                                             }
 
                     } else {
+                        let file_name2 = file_name.replace("_", "/");
                          if file.contains("pub fn get(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/get\", {file_name}::get as HandlerFn)"
+                            "(\"/{file_name2}/get\", {file_name}::get as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn post(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/post\", {file_name}::post as HandlerFn)"
+                            "(\"/{file_name2}/post\", {file_name}::post as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn update(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/update\", {file_name}::update as HandlerFn)"
+                            "(\"/{file_name2}/update\", {file_name}::update as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn delete(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/delete\", {file_name}::delete as HandlerFn)"
+                            "(\"/{file_name2}/delete\", {file_name}::delete as HandlerFn)"
                             ));
                         }
 
@@ -2158,7 +2172,8 @@ fn update_struct_doc(struct_doc: &str, new_paths: &[String], new_tags: &[String]
     let mut updated_doc = struct_doc.to_string();
 
         filename2 = filename2.strip_prefix("./.project_build/src/server/").unwrap().strip_suffix(".rs").unwrap();
-            // Update bagian paths
+        let filename2 = filename2.replace("_:", "_");
+    // Update bagian paths
     {
         let re_paths = Regex::new(r"paths\((?P<paths>[^)]*)\)").unwrap();
         updated_doc = re_paths.replace(&updated_doc, |caps: &regex::Captures| {
@@ -2171,13 +2186,18 @@ fn update_struct_doc(struct_doc: &str, new_paths: &[String], new_tags: &[String]
 
     // Update bagian tags
     {
-        let re_tags = Regex::new(r"tags\((?P<tags>[^)]*)\)").unwrap();
-        updated_doc = re_tags.replace(&updated_doc, |caps: &regex::Captures| {
-            let existing = caps.name("tags").unwrap().as_str().trim();
-            let added = new_tags.join(", ");
-            let merged = if existing.is_empty() { added } else { format!("{}, {}", existing, added) };
-            format!("tags({})", merged)
-        }).to_string();
+        let re_tags = Regex::new(r"tags\((?P<tags>.*?)\)").unwrap();
+updated_doc = re_tags.replace(&updated_doc, |caps: &regex::Captures| {
+    let existing = caps.name("tags").unwrap().as_str().trim();
+    let added = new_tags.join(", ");
+    let merged = if existing.is_empty() {
+        added
+    } else {
+        format!("{}, {}", existing, added)
+    };
+    format!("tags({})", merged)
+}).to_string();
+
     }
 
     // Update bagian schemas
@@ -2244,8 +2264,18 @@ pub struct ApiDoc;", app_config.name, app_config.description, app_config.version
         let fn_block  = caps.name("fn").unwrap().as_str();
         let fname     = caps.name("fname").unwrap().as_str();
 
-        new_paths.push(fname.to_string());
-        new_tags.push(format!("(name = \"{}\", description = \"{}\")", name, about));
+let module_name = Path::new(filename2)
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .replace("_:", "_");
+
+        new_paths.push(format!("crate::server::{}::{}", module_name, fname));
+        let new_tag = format!("(name = \"{}\", description = \"{}\")", name, about);
+        if !new_tags.contains(&new_tag) {
+            new_tags.push(new_tag);
+        }
         new_schemas.push(body.to_string());
 
         let method = match fname {
