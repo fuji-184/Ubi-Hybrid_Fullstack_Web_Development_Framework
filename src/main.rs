@@ -1912,25 +1912,25 @@ fn generate_mod_rs(server_dir: &str) {
                                             }
 
                     } else {
-                        let file_name2 = file_name.replace("_", "/");
+                        // let file_name2 = file_name.replace("_", "/");
                          if file.contains("pub fn get(") {
                                                 routes.push(format!(
-                            "(\"/{file_name2}/get\", {file_name}::get as HandlerFn)"
+                            "(\"/{file_name}/get\", {file_name}::get as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn post(") {
                                                 routes.push(format!(
-                            "(\"/{file_name2}/post\", {file_name}::post as HandlerFn)"
+                            "(\"/{file_name}/post\", {file_name}::post as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn update(") {
                                                 routes.push(format!(
-                            "(\"/{file_name2}/update\", {file_name}::update as HandlerFn)"
+                            "(\"/{file_name}/update\", {file_name}::update as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn delete(") {
                                                 routes.push(format!(
-                            "(\"/{file_name2}/delete\", {file_name}::delete as HandlerFn)"
+                            "(\"/{file_name}/delete\", {file_name}::delete as HandlerFn)"
                             ));
                         }
 
@@ -2186,15 +2186,23 @@ fn update_struct_doc(struct_doc: &str, new_paths: &[String], new_tags: &[String]
 
     // Update bagian tags
     {
-        let re_tags = Regex::new(r"tags\((?P<tags>.*?)\)").unwrap();
-updated_doc = re_tags.replace(&updated_doc, |caps: &regex::Captures| {
-    let existing = caps.name("tags").unwrap().as_str().trim();
-    let added = new_tags.join(", ");
-    let merged = if existing.is_empty() {
-        added
-    } else {
-        format!("{}, {}", existing, added)
-    };
+
+let re_tags = Regex::new(r"tags\((?P<tags>.*?)\)").unwrap();
+
+let updated_doc = re_tags.replace(&updated_doc, |caps: &regex::Captures| {
+    let existing_tags = caps.name("tags").unwrap().as_str().trim();
+
+
+    let mut parsed_tags = Vec::new();
+    if !existing_tags.is_empty() {
+        parsed_tags.push(existing_tags.to_string());
+    }
+
+    for tag in new_tags {
+        parsed_tags.push(tag.to_string());
+    }
+
+    let merged = parsed_tags.join(", ");
     format!("tags({})", merged)
 }).to_string();
 
