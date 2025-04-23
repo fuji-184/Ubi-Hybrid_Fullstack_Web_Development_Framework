@@ -503,14 +503,43 @@ if etag_header.value == etag.as_bytes() {
                             res.header("content-type: text/html").body_vec(isi.data.to_vec());
                         }
                         None => {
-                            res.header("content-type: text/html").body("not found");
-                        }
+                            let (path, params) = match_frontend_url(req.path()).unwrap();
+
+
+                            match Frontend::get(&format_compact!("{}/index.html", path.strip_prefix("/").unwrap())) {
+                                Some(isi) => {
+                                    res.header("content-type: text/html").body_vec(isi.data.to_vec());
+                                }
+                                None => {
+                                    res.header("content-type: text/html").body("not found");
+                                }
+                            }
+                }
                     };
                 } else {
+
                     let path = req.path().strip_prefix("/").unwrap();
-                    let index = Frontend::get(&format_compact!("{}index.html", path)).unwrap();
-                    res.header("content-type: text/html").body_vec(index.data.to_vec());
+                    match Frontend::get(&format_compact!("{}index.html", path)) {
+                        Some(isi) => {
+                            res.header("content-type: text/html").body_vec(isi.data.to_vec());
+                        },
+                        None => {
+
+                            let (path, params) = match_frontend_url(req.path().strip_suffix("/").unwrap()).unwrap();
+
+
+                            match Frontend::get(&format_compact!("{}/index.html", path.strip_prefix("/").unwrap())) {
+                                Some(isi) => {
+                                    res.header("content-type: text/html").body_vec(isi.data.to_vec());
+                                }
+                                None => {
+                                    res.header("content-type: text/html").body("not found");
+                                }
+                            }
+                        }
+                    }
                 }
+
             }
         }
 
@@ -587,6 +616,15 @@ fn match_url(url: &str) -> Option<(server::HandlerFn2, HashMap<String, String>)>
     for (pattern, handler) in server::PARAMETERIZED_ROUTES.iter() {
         if let Some(params) = parameterized_url(pattern, url) {
             return Some((*handler, params));
+        }
+    }
+    None
+}
+
+fn match_frontend_url(url: &str) -> Option<(&'static str, HashMap<String, String>)> {
+    for (pattern, path) in server::FRONTEND_PARAMETERIZED_ROUTES.iter() {
+        if let Some(params) = parameterized_url(pattern, url) {
+            return Some((pattern, params));
         }
     }
     None

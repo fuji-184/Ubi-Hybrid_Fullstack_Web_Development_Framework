@@ -817,7 +817,7 @@ fn convert_ts_to_rust(
         "fn :[1](:[2]) -> :[3] {\n:[4]\n}",
         // json stringify
         "serde_json::json!(&:[1]).to_string()",
-        "req_params.get(&:[1])",
+        "req_params.get(&:[1]).unwrap()",
         // print
         "println!(\"{:?}\", :[1])",
         // string literal
@@ -1862,6 +1862,24 @@ fn generate_run_middleware(path: &str) {
 
 }
 
+fn get_frontend_parameterized_routes(path: &str, frontend_parameterized_routes: &mut Vec<String>) {
+    for entry in fs::read_dir(path).unwrap() {
+        let entry = entry.unwrap();
+        let path2 = entry.path();
+        if path2.is_dir() {
+            get_frontend_parameterized_routes(path2.to_str().unwrap(), frontend_parameterized_routes);
+        } else if let Some(path_str) = path2.to_str() {
+            if path_str.contains("/:") && path_str.contains("ui.ubi") {
+                let final_path = path_str.strip_prefix("./.project_build/routes").unwrap()
+                    .strip_suffix("/ui.ubi").unwrap().to_string();
+                frontend_parameterized_routes.push(format!(
+                    "(\"{}\", \"{}\")", final_path, final_path.replace(":", "")));
+            }
+        }
+    }
+
+}
+
 fn generate_mod_rs(server_dir: &str) {
     let server_dir = PathBuf::from(server_dir);
     let mod_path = server_dir.join("mod.rs");
@@ -1869,10 +1887,13 @@ fn generate_mod_rs(server_dir: &str) {
 
     let mut routes = Vec::new();
     let mut parameterized_routes = Vec::new();
+    let mut frontend_parameterized_routes: Vec<String> = Vec::new();
     let mut ws_onconnect_routes = Vec::new();
     let mut ws_onmessage_routes = Vec::new();
     let mut ws_onclose_routes = Vec::new();
     let mut modules = Vec::new();
+
+    get_frontend_parameterized_routes("./.project_build/routes", &mut frontend_parameterized_routes);
 
     for entry in fs::read_dir(&server_dir).unwrap() {
         let entry = entry.unwrap();
@@ -2012,6 +2033,12 @@ lazy_static! {{
         map
     }};
 
+    pub static ref FRONTEND_PARAMETERIZED_ROUTES: HashMap<&'static str, &'static str> = {{
+        let mut map = HashMap::new();
+        {};
+        map
+    }};
+
 }}
 
 #[cfg(feature = "ws")]
@@ -2054,6 +2081,11 @@ lazy_static! {{
             .collect::<Vec<_>>()
             .join("\n        "),
          parameterized_routes
+            .iter()
+            .map(|route| format!("map.insert{};", route))
+            .collect::<Vec<_>>()
+            .join("\n        "),
+        frontend_parameterized_routes
             .iter()
             .map(|route| format!("map.insert{};", route))
             .collect::<Vec<_>>()
