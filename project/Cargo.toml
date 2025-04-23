@@ -33,4 +33,4 @@ overflow-checks = false
 
 [features]
 ws = []
-postgres = []
+postgres = ["may_postgres", "postgres-types"]
