@@ -1788,7 +1788,10 @@ fn generate_mod_rs_middleware(path: &str) {
             generate_mod_rs_middleware(path);
         } else if path2.extension().unwrap_or_default() == "rs" && path2.file_name().unwrap_or_default() != "mod.rs" {
             let filename = path2.file_name().unwrap().to_str().unwrap().strip_suffix(".rs").unwrap();
-            mod_rs.push_str(&format!("pub mod {};", filename));
+            let input = format!("pub mod {};", filename);
+            if !mod_rs.contains(&input) {
+                mod_rs.push_str(&input);
+            }
             middleware_routes.push(format!(
                             "(\"/{}\", {filename}::run_middleware as MiddlewareFn)",
                             filename.replace("_", "/")
@@ -1879,9 +1882,15 @@ fn generate_mod_rs(server_dir: &str) {
             if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
                 if file_name != "mod" {
                     if file_name.contains("_:") {
-                        modules.push(format!("#[path = \"{}.rs\"]\npub mod {};", file_name, file_name.replace("_:", "_")));
+                        let input = format!("#[path = \"{}.rs\"]\npub mod {};", file_name, file_name.replace("_:", "_"));
+                        if !modules.contains(&input) {
+                            modules.push(input);
+                        }
                     } else {
-                        modules.push(format!("pub mod {file_name};"));
+                        let input = format!("pub mod {file_name};");
+                        if !modules.contains(&input) {
+                            modules.push(input);
+                        }
                     }
 
                     let file = fs::read_to_string(&path).unwrap();
@@ -1912,25 +1921,25 @@ fn generate_mod_rs(server_dir: &str) {
                                             }
 
                     } else {
-                        // let file_name2 = file_name.replace("_", "/");
+                        let file_name2 = file_name.replace("_", "/");
                          if file.contains("pub fn get(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/get\", {file_name}::get as HandlerFn)"
+                            "(\"/{file_name2}/get\", {file_name}::get as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn post(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/post\", {file_name}::post as HandlerFn)"
+                            "(\"/{file_name2}/post\", {file_name}::post as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn update(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/update\", {file_name}::update as HandlerFn)"
+                            "(\"/{file_name2}/update\", {file_name}::update as HandlerFn)"
                             ));
                                             }
                         if file.contains("pub fn delete(") {
                                                 routes.push(format!(
-                            "(\"/{file_name}/delete\", {file_name}::delete as HandlerFn)"
+                            "(\"/{file_name2}/delete\", {file_name}::delete as HandlerFn)"
                             ));
                         }
 

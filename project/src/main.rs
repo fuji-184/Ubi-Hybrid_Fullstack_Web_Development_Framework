@@ -244,13 +244,15 @@ impl HttpService for Context {
                 match req.method() {
                     "GET" => {
                         isi = match server::ROUTES.get(format_compact!("{}/get", path.strip_suffix("/").unwrap_or(path)).as_str()) {
-                                                Some(handler) => {
- #[cfg(not(feature = "postgres"))]
+
+                            Some(handler) => {
+
+
+                                #[cfg(not(feature = "postgres"))]
                                 match handler(None, req) {
                                                         Ok(response) =>response,
                                                         Err(e) => format!("Error: {}", e),
                                                     }
-
 
                                 #[cfg(feature = "postgres")]
                                 match handler(Some(&self.db), req) {
@@ -259,10 +261,15 @@ impl HttpService for Context {
                                                     }
                                             }
                                                 None => {
-                                                    let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
+
+                                let url = format!("{}/{}", path.strip_suffix("/").unwrap_or(path), req.method().to_lowercase());
  #[cfg(not(feature = "postgres"))]
+
  match match_url(&url) {
-                                                        Some((handler, params)) => handler(None, req, &params).unwrap(),
+                                                        Some((handler, params)) => {
+                                        handler(None, req, &params).unwrap()
+
+                                    },
                                                         None =>  format!("404 Not Found"),
                                                     }
 
@@ -554,18 +561,22 @@ fn get_mime_type(path: String) -> &'static str {
         .unwrap_or(&"content_type: application/octet-stream")
 }
 
-pub fn parameterized_url(pattern: &str, url: &str) -> Option<std::collections::HashMap<String, String>> {
-    let re_str = Regex::new(r":([^/]+)").unwrap();
-    let regex_pattern = re_str.replace_all(pattern, r"([^/]+)");
-    let full_regex = format!("^{}$", regex_pattern);
-    let re = Regex::new(&full_regex).unwrap();
+pub fn parameterized_url(pattern: &str, url: &str) -> Option<HashMap<String, String>> {
+    let pattern_parts: Vec<&str> = pattern.split('/').collect();
+    let url_parts: Vec<&str> = url.split('/').collect();
 
-    let captures = re.captures(url)?;
+    if pattern_parts.len() != url_parts.len() {
+        return None;
+    }
 
-    let mut params = std::collections::HashMap::new();
-    for (i, cap) in re_str.captures_iter(pattern).enumerate() {
-        if let Some(param) = cap.get(1) {
-            params.insert(param.as_str().to_string(), captures[i + 1].to_string());
+    let mut params = HashMap::new();
+
+    for (pattern_part, url_part) in pattern_parts.iter().zip(url_parts.iter()) {
+        if pattern_part.starts_with(':') {
+            let param_name = &pattern_part[1..];
+            params.insert(param_name.to_string(), url_part.to_string());
+        } else if *pattern_part != *url_part {
+            return None;
         }
     }
 
