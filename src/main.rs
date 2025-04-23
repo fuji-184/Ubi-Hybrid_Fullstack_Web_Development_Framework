@@ -2757,7 +2757,7 @@ let output_dir = PathBuf::from(".project_build/android");
         Some("run-dev") => {
             watch_directory(".");
         },
-        _ => println!("invalid command!"),
+        _ => println!("Invalid command! type this command to show help : ubi help"),
     };
 
     Ok(())
