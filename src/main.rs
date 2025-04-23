@@ -5,6 +5,8 @@
     improper_ctypes
 )]
 
+extern crate may;
+
 mod tools;
 use tools::*;
 
@@ -29,6 +31,10 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 use serde::{Serialize, Deserialize};
 use notify::{Watcher, RecursiveMode, RecommendedWatcher};
+use std::process::{Child};
+use std::sync::Arc;
+use may::sync::Mutex;
+use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 // use compact_str::{format_compact, CompactString, ToCompactString};
 
 const CARGO_TOML: &str = include_str!("../project/Cargo.toml");
@@ -44,6 +50,10 @@ const DP_x86_64: &[u8] = include_bytes!("../libs/x86_64/dp");
 const CB_aarch_64: &[u8] = include_bytes!("../libs/aarch_64/cb");
 const PN_aarch_64: &[u8] = include_bytes!("../libs/aarch_64/pn");
 const DP_aarch_64: &[u8] = include_bytes!("../libs/aarch_64/dp");
+
+struct AppState {
+    running_process: Option<Child>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PostgresConfig {
@@ -2401,51 +2411,112 @@ fn render_slot(target_path: &str) -> String {
     content
 }
 
-fn watch_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let config_file = fs::read_to_string("./config.json").unwrap();
-    let app_config: AppConfig = serde_json::from_str(&config_file).unwrap();
 
-    let (tx, rx) = channel();
-    let watcher_config = notify::Config::default().with_poll_interval(std::time::Duration::from_secs(1));
-    let mut watcher: RecommendedWatcher = RecommendedWatcher::new(tx, watcher_config)?;
-    let current_dir = fs::canonicalize(".")?;
-    watcher.watch(&current_dir, RecursiveMode::Recursive)?;
-
-    loop {
-        match rx.recv() {
-            Ok(event) => {
-                if event.unwrap().paths.iter().any(|path| path.starts_with(".project_build")) {
-                    continue;
-                }
-
-                let output = StdCommand::new("ubi")
-                    .arg("build")
-                    .output();
-
-                match output {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            eprintln!("Error saat menjalankan ubi build: {}", String::from_utf8_lossy(&output.stderr));
-                        }
-                    }
-                    Err(e) => eprintln!("Gagal menjalankan perintah: {}", e),
-                }
-
-                let output2 = StdCommand::new(format!("./build/{}", app_config.name))
-                    .output();
-
-                match output2 {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            eprintln!("Error saat menjalankan {}: {}", app_config.name, String::from_utf8_lossy(&output.stderr));
-                        }
-                    }
-                    Err(e) => eprintln!("Gagal menjalankan perintah: {}", e),
+fn rebuild_and_run(state: Arc<Mutex<AppState>>) {
+    println!("\n----- Rebuilding project -----");
+    {
+        let mut state = state.lock().unwrap();
+        if let Some(mut child) = state.running_process.take() {
+            println!("Stopping previous process...");
+            #[cfg(target_family = "unix")]
+            unsafe {
+                use std::os::unix::process::CommandExt;
+                libc::kill(child.id() as i32, libc::SIGTERM);
+            }
+            #[cfg(target_family = "windows")]
+            {
+                match child.kill() {
+                    Ok(_) => println!("Process terminated"),
+                    Err(e) => println!("Failed to kill process: {}", e),
                 }
             }
-            Err(e) => eprintln!("Error dalam menerima peristiwa: {}", e),
+            match child.wait() {
+                Ok(_) => println!("Process exited"),
+                Err(e) => println!("Error waiting for process: {}", e),
+            }
         }
     }
+
+    let build_status = StdCommand::new("ubi")
+        .args(&["build-dev"])
+        .status();
+
+    match build_status {
+        Ok(status) => {
+            if status.success() {
+                println!("Build successful, starting application...");
+
+                let mut child = match StdCommand::new("./build/app_dev")
+                    .spawn() {
+                    Ok(child) => {
+                        println!("Application started with PID: {}", child.id());
+                        Some(child)
+                    },
+                    Err(e) => {
+                        println!("Failed to start application: {}", e);
+                        None
+                    }
+                };
+
+                let mut state = state.lock().unwrap();
+                state.running_process = child;
+            } else {
+                println!("Build failed with status: {}", status);
+            }
+        },
+        Err(e) => println!("Failed to execute build command: {}", e),
+    }
+}
+
+fn watch_directory(path: &str) {
+    let state = Arc::new(Mutex::new(AppState {
+        running_process: None,
+    }));
+    let (tx, rx) = may::sync::mpsc::channel();
+
+    let mut debouncer = new_debouncer(Duration::from_millis(500), move |res: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+        if let Ok(events) = res {
+            let should_rebuild = events.iter().any(|event| {
+                let path = &event.path;
+                if !path.to_str().map_or(false, |p| {
+                    p.contains("/target/") ||
+                    p.contains(".git") ||
+                    p.contains("/.project_build/") ||
+                    p.contains("/build") ||
+                    p.ends_with(".swp") ||
+                    p.ends_with("~")
+                }) {
+                    println!("Change detected in: {:?}", path);
+                    true
+                } else {
+                    false
+                }
+            });
+
+            if should_rebuild {
+                let _ = tx.send(());
+            }
+        }
+    }).expect("Failed to create debouncer");
+
+    debouncer.watcher()
+        .watch(Path::new(path), RecursiveMode::Recursive)
+        .expect("Failed to start watching directory");
+
+    println!("Watching for changes in {}", path);
+    println!("Press Ctrl+C to stop");
+
+    let state_clone = state.clone();
+
+    rebuild_and_run(state.clone());
+
+    while rx.recv().is_ok() {
+        // may::coroutine::sleep(Duration::from_millis(300));
+        while let Ok(_) = rx.try_recv() {}
+        rebuild_and_run(state_clone.clone());
+    }
+
+    println!("Watcher stopped");
 }
 
 fn build_overal(mode: &str) -> String {
@@ -2557,7 +2628,7 @@ fn main() -> io::Result<()> {
         .subcommand(Command::new("build-release").about("Build Ubi project in release mode"))
         .subcommand(Command::new("migrate").about("Migrate PostgreSQL database"))
         .subcommand(Command::new("build-android").about("Build for Android"))
-        .subcommand(Command::new("dev").about("Auto rebuild and rerun when changes detected. This is for development"))
+        .subcommand(Command::new("run-dev").about("Auto rebuild and rerun when changes detected. This is for development"))
         .get_matches();
 
     let mut project_name = String::new();
@@ -2620,7 +2691,7 @@ fn main() -> io::Result<()> {
 
             StdCommand::new("mv")
                 .arg(format!("./target/debug/{}", name))
-                .arg(&format!("../build/{}_dev", name))
+                .arg("../build/app_dev")
                 .current_dir(env::current_dir().unwrap())
                 .output()
                 .expect("Compiling failed");
@@ -2683,8 +2754,8 @@ let output_dir = PathBuf::from(".project_build/android");
                 .expect("Compiling Android failed");
 */
         },
-        Some("dev") => {
-            watch_directory().unwrap();
+        Some("run-dev") => {
+            watch_directory(".");
         },
         _ => println!("invalid command!"),
     };
