@@ -21,6 +21,7 @@ compact_str = { version = "*" }
 regex = "*"
 utoipa = { git = "https://github.com/fuji-184/utoipa.git", package = "utoipa" }
 utoipa-swagger-ui = { git = "https://github.com/fuji-184/utoipa.git", package = "utoipa-swagger-ui" }
+mimalloc = { version = "0.1", default-features = false }
 
 [profile.release]
 opt-level = 3

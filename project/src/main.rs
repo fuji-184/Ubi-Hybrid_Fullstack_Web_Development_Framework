@@ -5,6 +5,9 @@
     improper_ctypes
 )]
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[macro_use]
 extern crate may;
 extern crate may_minihttp;
