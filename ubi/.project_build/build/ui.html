@@ -1,0 +1,75 @@
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        background: black;
+        color: white;
+    }
+</style><div>
+    nav
+</div>
+
+
+
+<button onclick="post()">post</button>
+
+
+<div id='ae739e51f_4ca2_4549_bf6c_a741b171196f'></div>
+
+
+
+
+
+<script>let tes = new Signal([]);
+
+async function ambilData() {
+try {
+const response = await fetch("/api");
+const data = await response.json();
+
+tes.set(data);
+} catch (error) {
+console.error("Terjadi kesalahan:", error);
+}
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+ambilData();
+});
+
+async function post() {
+try {
+const response = await fetch("/api", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: 1, nama: "produk2", harga: 1000 }) });
+
+await ambilData();
+
+const data = await response.json();
+} catch (error) {
+console.error("Terjadi kesalahan:", error);
+}
+}
+
+async function hapus(id) {
+console.log(id);
+try {
+const response = await fetch("/api", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: id }) });
+
+await ambilData();
+
+const data = await response.json();
+} catch (error) {
+console.error("Terjadi kesalahan:", error);
+}
+}
+
+let ae739e51f_4ca2_4549_bf6c_a741b171196f = document.getElementById('ae739e51f_4ca2_4549_bf6c_a741b171196f');
+function render_ae739e51f_4ca2_4549_bf6c_a741b171196f() {
+    ae739e51f_4ca2_4549_bf6c_a741b171196f.innerHTML = "";
+    tes.get().forEach((isi, i) => {
+        let div = document.createElement("div");
+        div.innerHTML = `<div>    <div>${isi["id"] + 1}</div>    <div>${isi["nama"]}</div>    <div>${isi["harga"]}</div>    <div><button onclick="hapus()">hapus</button></div><div>`;
+        ae739e51f_4ca2_4549_bf6c_a741b171196f.appendChild(div);
+    });
+}
+effect(() => render_ae739e51f_4ca2_4549_bf6c_a741b171196f());
+</script>

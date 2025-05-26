@@ -1,0 +1,16 @@
+{
+  "description": "this is my app",
+  "features": [
+    "postgres"
+  ],
+  "name": "ubi",
+  "port": 8080,
+  "postgres": {
+    "host": "localhost",
+    "name": "tes",
+    "password": "fuji",
+    "port": 5432,
+    "username": "postgres"
+  },
+  "version": "0.1"
+}

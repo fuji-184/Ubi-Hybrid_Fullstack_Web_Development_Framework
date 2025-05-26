@@ -1,0 +1,73 @@
+<script>
+    let tes = new Signal([]);
+
+    async function ambilData() {
+        try {
+            const response = await fetch('/api');
+            const data = await response.json();
+
+            tes.set(data);
+        } catch (error) {
+            console.error('Terjadi kesalahan:', error);
+        }
+    }
+
+    ubi.loaded(
+        ambilData()
+    )
+
+    async function post() {
+        try {
+            const response = await fetch('/api', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    id: 1,
+                    nama: "produk2",
+                    harga: 1000
+                })
+            });
+
+            await ambilData()
+
+            const data = await response.json();
+        } catch (error) {
+            console.error('Terjadi kesalahan:', error);
+        }
+    }
+
+    async function hapus(id) {
+        console.log(id)
+        try {
+            const response = await fetch('/api', {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ id: id })
+            });
+
+            await ambilData()
+
+            const data = await response.json();
+
+        } catch (error) {
+            console.error('Terjadi kesalahan:', error);
+        }
+    }
+
+</script>
+
+<button onclick="post()">post</button>
+
+<for isi in tes.get()>
+<div>
+    <div>{isi["id"] + 1}</div>
+    <div>{isi["nama"]}</div>
+    <div>{isi["harga"]}</div>
+    <div><button onclick="hapus(${isi["id"]})">hapus</button></div>
+<div>
+</for>
+

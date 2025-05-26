@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body stytle="margin: 0">
+    <script>
+        const routes = {};
+
+        function router() {
+            const app = document.getElementById('app');
+            const path = window.location.pathname;
+            if (routes[path] !== undefined) {
+                app.innerHTML = routes[path];
+            }
+        }
+
+        function fetchContent(path) {
+            fetch(path, { method: 'GET' })
+                .then(response => response.text())
+                .then(data => {
+                    document.getElementById('app').innerHTML = data;
+                    if (!routes.hasOwnProperty(window.location.pathname)) {
+                        routes[window.location.pathname] = data;
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        function handleNavigation(event) {
+            event.preventDefault();
+
+            const target = event.target;
+            const path = target.getAttribute('href');
+            history.pushState(null, null, path);
+            if (routes.hasOwnProperty(path)) {
+                router();
+            } else {
+                fetchContent(`/parts/${window.location.pathname.substring(1)}`);
+            }
+        }
+
+        window.addEventListener('popstate', () => {
+            if (routes.hasOwnProperty(window.location.pathname)) {
+                router();
+            } else {
+                fetchContent(`/parts/${window.location.pathname}`);
+            }
+        });
+
+
+        function addCurrent() {
+            const appElement = document.getElementById("app");
+            if (!appElement) return;
+
+            const content = Array.from(appElement.children)
+                .map(child => child.outerHTML)
+                .join('');
+
+            routes[window.location.pathname] = content;
+        }
+        addCurrent();
+
+      class Signal {
+            constructor(initialValue) {
+                this.value = initialValue;
+                this.subscribers = new Set();
+            }
+
+            get() {
+                if (Signal.currentSubscriber) {
+                    this.subscribers.add(Signal.currentSubscriber);
+                }
+                return this.value;
+            }
+
+            set(newValue) {
+                this.value = newValue;
+                this.notify();
+            }
+
+            setAt(path, newValue) {
+        if (typeof path === "string") {
+            path = path.split(".");
+        }
+        if (!Array.isArray(path) || path.length === 0) return;
+
+        let obj = this.value;
+        for (let i = 0; i < path.length - 1; i++) {
+            if (Array.isArray(obj) || typeof obj === "object") {
+                obj = obj[path[i]];
+            } else {
+                return;
+            }
+            if (obj === undefined) return;
+        }
+
+        const lastKey = path[path.length - 1];
+        if (Array.isArray(obj)) {
+            obj[lastKey] = newValue;
+        } else if (typeof obj === "object") {
+            obj[lastKey] = newValue;
+        }
+
+        this.notify();
+    }
+
+            set_store(newValue) {
+                this.value = newValue;
+                this.notify_store();
+            }
+
+            notify() {
+                for (const subscriber of this.subscribers) {
+                    subscriber();
+                }
+            }
+
+            notify_store() {
+                for (const subscriber of this.subscribers) {
+                    subscriber(this.value);
+                }
+            }
+
+            subscribe(callback) {
+                this.subscribers.add(callback);
+            }
+
+            unsubscribe(callback) {
+                this.subscribers.delete(callback);
+            }
+
+            store_effect(callback) {
+                const runEffect = () => {
+                    Signal.currentSubscriber = runEffect;
+                    callback(this.value);
+                    Signal.currentSubscriber = null;
+                };
+                runEffect();
+            }
+        }
+
+        function effect(callback) {
+            const runEffect = () => {
+                Signal.currentSubscriber = runEffect;
+                callback();
+                Signal.currentSubscriber = null;
+            };
+            runEffect();
+        }
+
+        class GlobalStore {
+            constructor() {
+                this.signals = new Map();
+            }
+
+            createSignal(key, value) {
+                let signal = this.signals.get(key);
+                if (!signal) {
+                    signal = new Signal(value);
+                    this.signals.set(key, signal);
+                }
+                return signal;
+            }
+
+            read(key) {
+                const signal = this.signals.get(key);
+                return signal ? signal.get() : undefined;
+            }
+
+            write(key, value) {
+                const signal = this.createSignal(key, value);
+                signal.set_store(value);
+            }
+
+            subscribe(key, callback) {
+                let signal = this.signals.get(key);
+                if (signal) {
+
+                    signal.store_effect(callback);
+                    signal.subscribe(callback);
+                }
+            }
+
+            unsubscribe(key, callback) {
+                let signal = this.signals.get(key);
+                if (signal) {
+
+                    signal.unsubscribe(callback);
+                }
+            }
+
+            deleteSignal(key) {
+                if (this.signals.has(key)) {
+
+                    this.signals.delete(key);
+                }
+            }
+
+            clearStore() {
+
+                this.signals.clear();
+            }
+        }
+
+function after_dom(callback) {
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", callback);
+    } else {
+        callback();
+    }
+}
+    </script>
+
+    <div id="app">
+        <style>
+    body {
+        margin: 0;
+        padding: 0;
+        background: black;
+        color: white;
+    }
+</style><div>
+    nav
+</div>
+
+
+
+<button onclick="post()">post</button>
+
+
+<div id='ae739e51f_4ca2_4549_bf6c_a741b171196f'></div>
+
+
+
+
+
+<script>let tes = new Signal([]);
+
+async function ambilData() {
+try {
+const response = await fetch("/api");
+const data = await response.json();
+
+tes.set(data);
+} catch (error) {
+console.error("Terjadi kesalahan:", error);
+}
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+ambilData();
+});
+
+async function post() {
+try {
+const response = await fetch("/api", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: 1, nama: "produk2", harga: 1000 }) });
+
+await ambilData();
+
+const data = await response.json();
+} catch (error) {
+console.error("Terjadi kesalahan:", error);
+}
+}
+
+async function hapus(id) {
+console.log(id);
+try {
+const response = await fetch("/api", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: id }) });
+
+await ambilData();
+
+const data = await response.json();
+} catch (error) {
+console.error("Terjadi kesalahan:", error);
+}
+}
+
+let ae739e51f_4ca2_4549_bf6c_a741b171196f = document.getElementById('ae739e51f_4ca2_4549_bf6c_a741b171196f');
+function render_ae739e51f_4ca2_4549_bf6c_a741b171196f() {
+    ae739e51f_4ca2_4549_bf6c_a741b171196f.innerHTML = "";
+    tes.get().forEach((isi, i) => {
+        let div = document.createElement("div");
+        div.innerHTML = `<div>    <div>${isi["id"] + 1}</div>    <div>${isi["nama"]}</div>    <div>${isi["harga"]}</div>    <div><button onclick="hapus()">hapus</button></div><div>`;
+        ae739e51f_4ca2_4549_bf6c_a741b171196f.appendChild(div);
+    });
+}
+effect(() => render_ae739e51f_4ca2_4549_bf6c_a741b171196f());
+</script>
+    </div>
+
+</body>
+</html>

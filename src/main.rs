@@ -378,7 +378,7 @@ fn handle_for(input: &str, js_input: &str) -> (String, String) {
 
             let converted = format!(
                 r#"
-<div id='{id}'></ul>
+<div id='{id}'></div>
 "#
             );
 
@@ -587,7 +587,7 @@ fn convert_middleware(
         // string struct
         ":[1]: String,",
         // number struct
-        ":[1]: i32,",
+        ":[1]: i64,",
         // boolean struct
         ":[1]: bool",
 
@@ -749,7 +749,13 @@ fn convert_ts_to_rust(
         // number struct
         ":[1]: number;",
         // boolean struct
-        ":[1]: boolean",
+        ":[1]: boolean;",
+        ":[1]: string =",
+        // number struct
+        ":[1]: number =",
+        // boolean struct
+        ":[1]: boolean =",
+
         // function returns string
         "function :[1](:[2]): string {\n:[4]\n}",
         // function
@@ -817,9 +823,15 @@ fn convert_ts_to_rust(
         // string struct
         ":[1]: String,",
         // number struct
-        ":[1]: i32,",
+        ":[1]: i64,",
         // boolean struct
         ":[1]: bool",
+
+        ":[1]: String =",
+        // number struct
+        ":[1]: i64 =",
+        // boolean struct
+        ":[1]: bool =",
 
         // function returns string
         "fn :[1](:[2]) -> String {\n:[4]\n}",
@@ -1026,8 +1038,10 @@ fn convert_py_to_rust(
         "ubi.req.params(:[1])",
         ": String = None",
         "impl :[1] { :[2] }",
-        ": :[1] = ubi.query(:[2])",
-        "ubi.query(:[2])",
+        ": :[1] = ubi.query(:[2], null)",
+        "ubi.query(:[2], null)",
+        ": :[1] = ubi.query(:[2], :[3])",
+        "ubi.query(:[1], :[2])",
         "ubi.req.data",
         "#json",
     ];
@@ -1038,8 +1052,10 @@ fn convert_py_to_rust(
         "req_params.get(&:[1])",
         ": String = String::new()",
         "",
-        " = db.query(:[2])?",
-        "db.query(:[2])?",
+        " = db.query(:[2], None)?",
+        "db.query(:[2], None)?",
+        " = db.query(:[2], Some(&[:[3]]))?",
+        "db.query(:[1], Some(&[:[2]]))?",
         "serde_json::from_slice(req.body().fill_buf().unwrap()).unwrap()",
         "#[derive(Debug, serde::Serialize, serde::Deserialize)]",
     ];
@@ -1097,8 +1113,10 @@ if out_filename.contains("_:") {
     }
 
     let input_templates2: Vec<String> = vec![
-        ":[1] :[2] = ubi.query(:[3])",
-        "ubi.query(:[1])",
+        ":[1] :[2] = ubi.query(:[3], null)",
+        "ubi.query(:[1], null)",
+        ":[1] :[2] = ubi.query(:[3], :[4])",
+        "ubi.query(:[1], :[2])",
         "f :[1] (:[2]): :[3] {:[4]}",
         "f :[1] (:[2]) {:[3]}",
         ":[1] := \":[2]\"",
@@ -1123,8 +1141,10 @@ if out_filename.contains("_:") {
     ].into_iter().map(String::from).collect();
 
     let output_templates2: Vec<String> = vec![
-        "let :[2]: :[1] = ubi.query(:[3].to_string())",
-        "ubi.query(:[1].to_string())",
+        "let :[2]: :[1] = db.query(:[3].to_string(), None)",
+        "db.query(:[1].to_string(), None)",
+        "let :[2]: :[1] = db.query(:[3].to_string(), Some(&[:[4]]))",
+        "db.query(:[1].to_string(), Some(&[:[2]]))",
         "fn :[1] (:[2]) -> :[3] {:[4]}",
         "fn :[1] (:[2]) {:[3]}",
         "let :[1] = String::from(\":[2]\")",
@@ -1172,6 +1192,7 @@ fn convert_ts_to_sql(
 
     let input_templates: Vec<String> = vec![
         "// delete_table_:[1]",
+        "// json",
         "type :[1] = :[2] & :[3];",
         "number",
         "string",
@@ -1192,7 +1213,7 @@ fn convert_ts_to_sql(
 
     let output_templates: Vec<String> = vec![
         "DROP TABLE IF EXISTS :[1] CASCADE;",
-
+        "",
         "",
         "bigint",
         "text",
@@ -1626,9 +1647,83 @@ fn extract_html_variables(html: &str) -> Vec<String> {
         .collect()
 }
 
+fn convert_ubi_to_html(
+    html: &mut String,
+    js: &mut String
+) {
+
+    let input_templates: Vec<String> = vec![
+"sahaha"
+    ].into_iter().map(String::from).collect();
+
+    let output_templates: Vec<String> = vec![
+"lslsls"
+    ].into_iter().map(String::from).collect();
+
+
+    let input_templates2: Vec<String> = vec![
+        "ubi.loaded(:[1])"
+
+    ].into_iter().map(String::from).collect();
+
+    let output_templates2: Vec<String> = vec![
+        "document.addEventListener('DOMContentLoaded', () => { :[1] })"
+
+    ].into_iter().map(String::from).collect();
+
+               for (input, output) in input_templates.iter().zip(output_templates.iter()) {
+            let mut output_result = StdCommand::new(ubi_path().join("cb"))
+                    .args([input, output, "-stdin", "-stdout", "-matcher", ".html"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn().unwrap();
+
+            if let Some(mut stdin) = output_result.stdin.take() {
+                stdin.write_all(html.as_bytes()).unwrap();
+            }
+
+            let output = output_result.wait_with_output().unwrap();
+
+            if !output.status.success() {
+                eprintln!("Gagal menjalankan formatter");
+                return;
+            }
+
+            *html = String::from_utf8(output.stdout).unwrap();
+
+
+        }
+
+        for (input, output) in input_templates2.iter().zip(output_templates2.iter()) {
+                let mut output_result = StdCommand::new(ubi_path().join("cb"))
+                            .args([input, output, "-stdin", "-stdout", "-matcher", ".js"])
+                            .stdin(Stdio::piped())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::null())
+                            .spawn().unwrap();
+
+                if let Some(mut stdin) = output_result.stdin.take() {
+                    stdin.write_all(js.as_bytes()).unwrap();
+                }
+
+                let output = output_result.wait_with_output().unwrap();
+
+                if !output.status.success() {
+                    eprintln!("Gagal menjalankan formatter");
+                    return;
+                }
+
+                *js = String::from_utf8(output.stdout).unwrap();
+
+        }
+}
+
 fn convert_ubi(input: &str, _input_path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
     let (style, html) = extract_styles(input);
-    let (mut html, raw_js) = split_html_js(&html);
+    let (mut html, mut raw_js) = split_html_js(&html);
+
+    convert_ubi_to_html(&mut html, &mut raw_js);
 
     let tmp_ts_file_path = "./.project_build/tmp.ts";
     let mut tmp_ts_file = fs::File::create(tmp_ts_file_path)?;
